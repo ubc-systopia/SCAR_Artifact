@@ -2,3 +2,7 @@
 	path = third_party/cpython
 	url = git@github.com:ubc-systopia/cpython.git
 	branch = llct
+[submodule "third_party/quickjs"]
+	path = third_party/quickjs
+	url = git@github.com:ubc-systopia/quickjs.git
+	branch = llct
