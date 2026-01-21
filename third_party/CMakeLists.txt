@@ -1,7 +1,7 @@
 # QuickJS
 set(QUICKJS_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/quickjs" CACHE FILEPATH "QuickJS source directory")
 set(QUICKJS_INSTALL_DIR "${CMAKE_BINARY_DIR}/quickjs" CACHE FILEPATH "QuickJS installation directory")
-set(QUICKJS_HEADER_DIR "${QUICKJS_INSTALL_DIR}/include/quickjs" CACHE FILEPATH "QuickJS include directory")
+set(QUICKJS_HEADER_DIR "${QUICKJS_INSTALL_DIR}/include" CACHE FILEPATH "QuickJS include directory")
 set(QUICKJS_SHARED_LIB "${QUICKJS_INSTALL_DIR}/lib/quickjs/libquickjs.so" CACHE FILEPATH "QuickJS shared library")
 
 add_custom_command(
