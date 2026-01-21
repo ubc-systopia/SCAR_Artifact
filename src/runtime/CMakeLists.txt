@@ -1,1 +1,2 @@
+add_subdirectory(cpython)
 add_subdirectory(quickjs)

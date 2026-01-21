@@ -10,34 +10,6 @@
 
 sync_ctx_t sync_ctx;
 
-QUICKJS_TARGET_CACHELINE(DECLARE_CACHELINE);
-
-void quickjs_get_bytecode_handler_cacheline() {
-    uintptr_t target_base = (uintptr_t)&js_std_eval_file;
-
-    JSRuntime* rt;
-    JSContext* ctx;
-
-    quickjs_init(&rt, &ctx);
-    const char* void_eval = "(() => {})();";
-
-    size_t buf_len = strlen(void_eval);
-    uint8_t* buf = js_malloc(ctx, buf_len + 1);
-    memcpy(buf, void_eval, buf_len);
-    const char* js_void_fn = "void.js";
-    int eval_flags = 1;
-
-    js_std_eval_buf(ctx, buf, buf_len, js_void_fn, eval_flags);
-    quickjs_free(rt, ctx);
-
-    QUICKJS_TARGET_CACHELINE(TARGET_ADDRESS_OFFSET);
-
-    log_info(
-        "Target base address: %lx, target goto8 address: %lx, target sar "
-        "address: %lx",
-        target_base, target_goto8, target_sar);
-}
-
 JSContext* JS_NewCustomContext(JSRuntime* rt) {
     JSContext* ctx;
     ctx = JS_NewContextRaw(rt);
@@ -85,7 +57,6 @@ void quickjs_eval_buf_loop(JSRuntime* rt,
     reset_sync_ctx(QUICKJS_PROJ_ID);
 
     quickjs_init(&rt, &ctx);
-    quickjs_get_bytecode_handler_cacheline();
 
     size_t buf_len;
     uint8_t *buf = js_load_file(ctx, &buf_len, eval_file);
@@ -93,27 +64,14 @@ void quickjs_eval_buf_loop(JSRuntime* rt,
     pthread_barrier_wait(sync_ctx.barrier);
 
     do {
-        if (sync_ctx_get_action() == SYNC_CTX_EXIT) {
-            break;
-        }
-
         js_std_eval_buf(ctx, buf, buf_len, eval_file, 1);
 
-        sync_ctx_set_action(SYNC_LOOP_PAUSE);
-        log_debug("Quickjs loop pause");
-
-        uint64_t lat_goto8 = timed_access((void*)(uintptr_t)target_goto8 + CACHE_LINE_SIZE);
-        uint64_t lat_sar = timed_access((void*)(uintptr_t)target_sar + CACHE_LINE_SIZE);
-        if (mem_access_level(lat_goto8) >= L3_LEVEL) {
-            log_debug("goto8 got evict lat %d by %d", lat_goto8,
-                     *quickjs_loop_cache_set);
-        }
-        if (mem_access_level(lat_sar) >= L3_LEVEL) {
-            log_debug("sar got evict lat %d by %d", lat_sar,
-                     *quickjs_loop_cache_set);
-        }
+        sync_ctx_set_action(SYNC_CTX_PAUSE);
+        pthread_barrier_wait(sync_ctx.barrier);
 
         pthread_barrier_wait(sync_ctx.barrier);
     } while (sync_ctx_get_action() != SYNC_CTX_EXIT);
+
+    quickjs_free(rt, ctx);
 }
 

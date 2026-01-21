@@ -138,7 +138,7 @@ void init_sync_ctx(int proj_id) {
     sync_ctx.barrier = shm_create_barrier(barrier_id);
     sync_ctx.mutex = shm_create_mutex(mutex_id);
     sync_ctx.action = shm_alloc("sync_ctx_action", action_id, sizeof(sync_ctx_action_t));
-    sync_ctx.data = (uint8_t (*)[SHARED_DATA_SIZE]) shm_alloc("sync_ctx_data", data_id, SHARED_DATA_SIZE);
+    sync_ctx.data = (uint64_t *) shm_alloc("sync_ctx_data", data_id, sizeof(uint64_t));
 }
 
 void free_sync_ctx(int proj_id) {

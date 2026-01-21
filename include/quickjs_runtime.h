@@ -7,12 +7,6 @@
 
 #define QUICKJS_PROJ_ID (100)
 
-typedef struct quickjs_victim_thread_config_t {
-	const char* js_eval_file;
-	int victim_runs;
-	int pin_cpu;
-} quickjs_victim_thread_config_t;
-
 void quickjs_eval_buf_loop(JSRuntime* rt,
 						   JSContext* ctx,
 						   const char* eval_file);
@@ -21,6 +15,8 @@ void quickjs_get_bytecode_handler_cacheline();
 
 void quickjs_init(JSRuntime** rt, JSContext** ctx);
 void quickjs_free(JSRuntime* rt, JSContext* ctx);
+
+// TODO: move below into attacker
 
 enum OPCodeEnum {
 #define SHORT_OPCODES 1
