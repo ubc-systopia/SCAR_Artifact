@@ -38,15 +38,37 @@ void cpython_init(char *file) {
         log_error("Failed to set up initialize CPython context", status.func, status.err_msg);
         exit(1);
     }
+
+    log_info("Python environment initialized successfully");
 }
 
 void cpython_free() {
     Py_Finalize();
 }
 
-void cpython_eval_loop(char* file, uint32_t iterations) {
-    /* pin_cpu(pinned_cpu0); */
+void cpython_save_gt(const char* filename) {
+    FILE* fp = fopen(filename, "w");
+    if (fp == NULL) {
+        log_error("Error opening ground truth file %s", filename);
+        return;
+    }
 
+    for (uint16_t j = 0; j < python_opcode_log_ctr; ++j) {
+        uint64_t time = python_opcode_log[j][0];
+        uint64_t opcode = python_opcode_log[j][1];
+
+        if (opcode == GT_INSTR_POW_ZERO)
+            fprintf(fp, "0:%lu:zero\n", time);
+        if (opcode == GT_INSTR_POW_ZERO)
+            fprintf(fp, "1:%lu:window\n", time);
+        if (opcode == GT_INSTR_POW_ZERO)
+            fprintf(fp, "2:%lu:trailing\n", time);
+    }
+
+    fclose(fp);
+}
+
+void cpython_eval_loop(char* file, uint32_t iterations) {
     log_info("Start cpython eval loop");
 
     reset_sync_ctx(CPYTHON_PROJ_ID);
@@ -54,11 +76,20 @@ void cpython_eval_loop(char* file, uint32_t iterations) {
     cpython_init(file);
     PyObject* module = PyImport_ImportModule("__main__");
     PyObject* test = PyObject_GetAttrString(module, "test");
+    if (!test) PyErr_Clear();
     PyObject* probe = PyObject_GetAttrString(module, "probe");
+    if (!probe) PyErr_Clear();
 
+    // Signal init done
+    pthread_barrier_wait(sync_ctx.barrier);
+
+    log_info("Wait for attacker initialization");
+
+    // Wait for attacker process
     pthread_barrier_wait(sync_ctx.barrier);
 
     do {
+        python_opcode_log_ctr = 0;
         sync_ctx_action_t action = sync_ctx_get_action();
         uint64_t tsc = rdtscp();
 
@@ -75,7 +106,7 @@ void cpython_eval_loop(char* file, uint32_t iterations) {
             }
         } else {
             assert(probe != NULL);
-            PyObject *arg = PyLong_FromLong(*sync_ctx.data);
+            PyObject *arg = PyLong_FromUnsignedLong(*sync_ctx.data);
             for (int i = 0; i < iterations; i++) {
                 PyObject *ret = PyObject_CallOneArg(probe, arg);
 
@@ -89,6 +120,8 @@ void cpython_eval_loop(char* file, uint32_t iterations) {
 
         sync_ctx_set_action(SYNC_CTX_PAUSE);
         pthread_barrier_wait(sync_ctx.barrier);
+
+        cpython_save_gt("gt.out");
 
         pthread_barrier_wait(sync_ctx.barrier);
     } while (sync_ctx_get_action() != SYNC_CTX_EXIT);

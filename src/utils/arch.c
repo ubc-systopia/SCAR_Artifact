@@ -10,9 +10,9 @@
 
 #include "log.h"
 
-const int pinned_cpu0 = 10;
-const int pinned_cpu1 = 12;
-const int pinned_cpu2 = 14;
+const int pinned_cpu0 = 11;
+const int pinned_cpu1 = 13;
+const int pinned_cpu2 = 15;
 
 /**
  * \description:
@@ -23,7 +23,7 @@ const int pinned_cpu2 = 14;
  *  \return:
  *         ret:[int]: errno
  */
-int pin_cpu(int cpu_id) {
+static int pin_cpu(int cpu_id) {
     cpu_set_t cset;
     CPU_ZERO(&cset);
     CPU_SET(cpu_id, &cset);
@@ -58,6 +58,10 @@ int iso_cpu() {
     int ex_code = pclose(pipe);
     log_debug("cset shield pid %d status: %i", pid, WEXITSTATUS(ex_code));
     log_debug(output);
+    if (ex_code != 0) {
+        log_error("cset shield failed");
+        exit(1);
+    }
     return ex_code;
 }
 

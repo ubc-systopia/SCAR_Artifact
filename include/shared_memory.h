@@ -3,6 +3,9 @@
 #include <pthread.h>
 #include <stdint.h>
 
+#define QUICKJS_PROJ_ID (100)
+#define CPYTHON_PROJ_ID (200)
+
 typedef enum sync_ctx_action_t {
     SYNC_CTX_UNDEFINED,
     SYNC_CTX_START,

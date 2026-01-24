@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include <stdint.h>
 
@@ -37,8 +39,6 @@
 extern const int pinned_cpu0;
 extern const int pinned_cpu1;
 extern const int pinned_cpu2;
-
-int pin_cpu(int cpu_id);
 
 int iso_cpu();
 

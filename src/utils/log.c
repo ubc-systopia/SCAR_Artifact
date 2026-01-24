@@ -136,7 +136,8 @@ void log_system_info() {
     get_program_cmdline();
     get_cpu_frequency();
     get_kernel_cmdline();
-    get_git_status();
+    // TODO: uncomment
+    // get_git_status();
     get_cset_list();
 }
 

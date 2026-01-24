@@ -5,8 +5,6 @@
 #define LLCT_INST
 #include "quickjs/quickjs.h"
 
-#define QUICKJS_PROJ_ID (100)
-
 void quickjs_eval_buf_loop(JSRuntime* rt,
 						   JSContext* ctx,
 						   const char* eval_file);

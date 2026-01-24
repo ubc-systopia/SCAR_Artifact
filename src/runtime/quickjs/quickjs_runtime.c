@@ -61,14 +61,21 @@ void quickjs_eval_buf_loop(JSRuntime* rt,
     size_t buf_len;
     uint8_t *buf = js_load_file(ctx, &buf_len, eval_file);
 
+    // Signal init done
+    pthread_barrier_wait(sync_ctx.barrier);
+
+    // Wait for attacker process
     pthread_barrier_wait(sync_ctx.barrier);
 
     do {
+        log_info("victim: %lu", rdtscp());
         js_std_eval_buf(ctx, buf, buf_len, eval_file, 1);
 
+        // Wait for attacker
         sync_ctx_set_action(SYNC_CTX_PAUSE);
         pthread_barrier_wait(sync_ctx.barrier);
 
+        // Wait for attacker process
         pthread_barrier_wait(sync_ctx.barrier);
     } while (sync_ctx_get_action() != SYNC_CTX_EXIT);
 

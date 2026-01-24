@@ -4,4 +4,4 @@ target_link_libraries(cpython_runtime PUBLIC ${CPYTHON_SHARED_LIB} utils)
 target_include_directories(cpython_runtime PUBLIC ${CPYTHON_HEADER_DIR})
 
 add_executable(cpython_rt cpython_rt.c)
-target_link_libraries(cpython_rt PRIVATE cpython_runtime ${CPYTHON_SHARED_LIB} utils)
+target_link_libraries(cpython_rt PRIVATE cpython_runtime utils)
