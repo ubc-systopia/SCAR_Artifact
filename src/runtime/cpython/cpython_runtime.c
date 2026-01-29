@@ -59,9 +59,9 @@ void cpython_save_gt(const char* filename) {
 
         if (opcode == GT_INSTR_POW_ZERO)
             fprintf(fp, "0:%lu:zero\n", time);
-        if (opcode == GT_INSTR_POW_ZERO)
+        if (opcode == GT_INSTR_POW_WINDOW)
             fprintf(fp, "1:%lu:window\n", time);
-        if (opcode == GT_INSTR_POW_ZERO)
+        if (opcode == GT_INSTR_POW_TRAILING)
             fprintf(fp, "2:%lu:trailing\n", time);
     }
 

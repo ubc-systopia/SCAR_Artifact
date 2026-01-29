@@ -23,8 +23,8 @@ set(CPYTHON_VENV "${CPYTHON_INSTALL_DIR}/venv" CACHE FILEPATH "CPython virtual e
 
 add_custom_command(
         OUTPUT ${CPYTHON_SHARED_LIB}
-        COMMAND ./configure --enable-shared --prefix=${CPYTHON_INSTALL_DIR} > /dev/null
-        COMMAND $(MAKE) -j$(nproc) install > /dev/null
+        COMMAND ./configure --enable-shared --prefix=${CPYTHON_INSTALL_DIR}
+        COMMAND $(MAKE) -j$(nproc) install
         COMMAND patchelf --set-rpath '$$ORIGIN/../lib/' ${CPYTHON_BINARY}
         COMMAND ${CPYTHON_BINARY} -m venv ${CPYTHON_VENV}
         WORKING_DIRECTORY ${CPYTHON_SRC_DIR})
