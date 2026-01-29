@@ -23,7 +23,7 @@ void cpython_run(char *eval_file, uint64_t iterations) {
 }
 
 int main(int argc, char *argv[]) {
-    pin_cpu(pinned_cpu2);
+    iso_pin_cpu(pinned_cpu2);
 
     if (argc >= 3) {
         char *endptr = NULL;

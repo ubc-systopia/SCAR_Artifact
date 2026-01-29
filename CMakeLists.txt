@@ -3,7 +3,8 @@ project(SCAR_Artifact C)
 
 set(CMAKE_C_STANDARD 11)
 
-execute_process(COMMAND bash -c setup.sh)
+file(COPY setup.sh DESTINATION ${CMAKE_BINARY_DIR})
+execute_process(COMMAND bash -c ./setup.sh)
 
 set(INCLUDE_DIR ${CMAKE_SOURCE_DIR}/include CACHE FILEPATH "Common include directory")
 include_directories(${INCLUDE_DIR})

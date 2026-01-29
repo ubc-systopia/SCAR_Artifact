@@ -21,7 +21,7 @@ void quickjs_run(char *eval_file) {
 }
 
 int main(int argc, char *argv[]) {
-    pin_cpu(pinned_cpu2);
+    iso_pin_cpu(pinned_cpu2);
     if (argc >= 1) {
         quickjs_run(argv[1]);
     } else {
