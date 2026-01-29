@@ -8,7 +8,35 @@
 #include "quickjs/quickjs-libc.h"
 #include "shared_memory.h"
 
+QUICKJS_TARGET_CACHELINE(DECLARE_CACHELINE);
+
 sync_ctx_t sync_ctx;
+
+void quickjs_get_bytecode_handler_cacheline() {
+    uintptr_t target_base = (uintptr_t)&js_std_eval_file;
+
+    JSRuntime* rt;
+    JSContext* ctx;
+
+    quickjs_init(&rt, &ctx);
+    const char* void_eval = "(() => {})();";
+
+    size_t buf_len = strlen(void_eval);
+    uint8_t* buf = js_malloc(ctx, buf_len + 1);
+    memcpy(buf, void_eval, buf_len);
+    const char* js_void_fn = "void.js";
+    int eval_flags = 1;
+
+    js_std_eval_buf(ctx, buf, buf_len, js_void_fn, eval_flags);
+    quickjs_free(rt, ctx);
+
+    QUICKJS_TARGET_CACHELINE(TARGET_ADDRESS_OFFSET);
+
+    log_info(
+        "Target base address: %lx, target goto8 address: %lx, target sar "
+        "address: %lx",
+        target_base, target_goto8, target_sar);
+}
 
 JSContext* JS_NewCustomContext(JSRuntime* rt) {
     JSContext* ctx;
@@ -81,4 +109,3 @@ void quickjs_eval_buf_loop(JSRuntime* rt,
 
     quickjs_free(rt, ctx);
 }
-

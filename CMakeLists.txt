@@ -3,6 +3,11 @@ project(SCAR_Artifact C)
 
 set(CMAKE_C_STANDARD 11)
 
+set(CMAKE_C_FLAGS_DEBUG "-g -O1")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O1")
+
+add_definitions(-DICELAKE)
+
 file(COPY setup.sh DESTINATION ${CMAKE_BINARY_DIR})
 execute_process(COMMAND bash -c ./setup.sh)
 

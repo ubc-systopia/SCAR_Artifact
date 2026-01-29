@@ -22,7 +22,10 @@
 		_a < _b ? _a : _b;      \
 	})
 
-#define PAGE_SHIFT (12)
+#ifdef PAGE_SHIFT
+#undef PAGE_SHIFT
+#endif
+#define PAGE_SHIFT (12u)
 #define PAGE_SIZE (1ull << PAGE_SHIFT)
 
 #define HUGEPAGE_SHIFT (30)

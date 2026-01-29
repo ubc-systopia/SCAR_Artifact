@@ -12,6 +12,9 @@
 
 #define LOG_COLOR_RESET "\x1B[0m"
 
+#define LOG_BOLD_ON "\e[1m"
+#define LOG_BOLD_OFF "\e[0m"
+
 #define LOG_VOID(...) \
 do {              \
 } while (0)

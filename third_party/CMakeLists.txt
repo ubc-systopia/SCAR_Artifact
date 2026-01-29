@@ -30,3 +30,6 @@ add_custom_command(
         WORKING_DIRECTORY ${CPYTHON_SRC_DIR})
 
 add_custom_target(cpython DEPENDS ${CPYTHON_SHARED_LIB})
+
+# LLCFeasible
+add_subdirectory(LLCFeasible)
