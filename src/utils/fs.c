@@ -23,7 +23,7 @@ int create_directory(const char* dir) {
                 return 1;
             }
         }
-        log_info("parent: %s", parent);
+        log_trace("parent: %s", parent);
         free(parent);
         if (mkdir(dir, 0755) == 0) {
         } else {

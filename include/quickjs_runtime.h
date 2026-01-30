@@ -16,6 +16,14 @@ void quickjs_free(JSRuntime* rt, JSContext* ctx);
 
 // TODO: move below into attacker
 
+typedef struct quickjs_runtime_thread_config_t {
+	const char* js_eval_file;
+	int victim_runs;
+	int pin_cpu;
+} quickjs_runtime_thread_config_t;
+
+void *quickjs_runtime_thread(void *param);
+
 enum OPCodeEnum {
 #define SHORT_OPCODES 1
 #define CONFIG_BIGNUM 1

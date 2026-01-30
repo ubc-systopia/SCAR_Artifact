@@ -16,8 +16,7 @@ bool l2_filter = true, single_thread = false;
 size_t num_l2sets;
 u32 extra_sf_cong = 0; // extra_cong wrt. SF!
 
-EVSet *get_sf_kth_evset(int k)
-{
+EVSet *get_sf_kth_evset(int k) {
 	int index, page_slot, l2_uc_bits, l2_uc_slot, l3_uc_slot;
 	index = k;
 	page_slot = index % NUM_PAGE_SLOTS;
@@ -44,8 +43,7 @@ EVSet *get_sf_kth_evset(int k)
 	return sfevset_complex[page_slot][l2_uc_slot][l3_uc_slot];
 }
 
-int measure_performance(EVSet *evset)
-{
+int measure_performance(EVSet *evset) {
 	u32 n_repeat = 1000, aux;
 	i64 para_lat = 0, ps_lat = 0, ptr_lat = 0;
 	u64 end_tsc, start, end;
@@ -83,8 +81,7 @@ int measure_performance(EVSet *evset)
 	return false;
 }
 
-static bool check_and_set_sf_evset(u8 *target, EVSet *evset)
-{
+static bool check_and_set_sf_evset(u8 *target, EVSet *evset) {
 	if (!evset || evset->size < SF_ASSOC + extra_sf_cong) {
 		_error("Failed to build sf evset\n");
 		return false;
@@ -106,8 +103,7 @@ static bool check_and_set_sf_evset(u8 *target, EVSet *evset)
 	return true;
 }
 
-EVSet *prepare_evsets(u8 *target, helper_thread_ctrl *hctrl)
-{
+EVSet *prepare_evsets(u8 *target, helper_thread_ctrl *hctrl) {
 	EVSet *l2_evset = NULL;
 	for (u32 i = 0; i < max_retry; i++) {
 		l2_evset = build_l2_EVSet(target, &def_l2_ev_config, NULL);
@@ -142,8 +138,37 @@ EVSet *prepare_evsets(u8 *target, helper_thread_ctrl *hctrl)
 	return sf_evset;
 }
 
-static void shuffle_index(u32 *idxs, u32 sz)
-{
+void prepare_evset_thres(uintptr_t target, EVSet **evset, int *threshold) {
+	helper_thread_ctrl hctrl;
+	if (start_helper_thread(&hctrl)) {
+		_error("Failed to start helper!\n");
+		return;
+	}
+	int retry = 4;
+	for (int i = 0; i < retry; ++i) {
+		*evset = prepare_evsets((uint8_t *)target, &hctrl);
+		if (*evset != NULL) {
+			*threshold = calibrate_para_probe_lat((uint8_t *)target,
+			                                      *evset,
+			                                      array_repeat,
+			                                      l2_repeat,
+			                                      bad_threshold_ratio);
+		}
+		if (*evset != NULL && *threshold != 0) {
+			log_info("Find threshold: %d", *threshold);
+			break;
+		}
+		if (i == retry - 1) {
+			log_error("Cannot calibrate probe latency");
+			exit(1);
+		}
+	}
+
+	stop_helper_thread(&hctrl);
+	return;
+}
+
+static void shuffle_index(u32 *idxs, u32 sz) {
 	srand(time(NULL));
 	for (u32 tail = sz - 1; tail > 0; tail--) {
 		u32 n_choice = tail + 1;
@@ -152,8 +177,7 @@ static void shuffle_index(u32 *idxs, u32 sz)
 	}
 }
 
-int build_sf_evset_all(u32 n_offset, helper_thread_ctrl *hctrl)
-{
+int build_sf_evset_all(u32 n_offset, helper_thread_ctrl *hctrl) {
 	EVSet ***l2evsets = build_l2_evsets_all();
 	if (!l2evsets) {
 		log_error("Failed to build L2 evset complex\n");
@@ -316,8 +340,7 @@ timeout_break:
 	return EXIT_SUCCESS;
 }
 
-int LLCF_multi_evset(u32 n_offset, helper_thread_ctrl *hctrl)
-{
+int LLCF_multi_evset(u32 n_offset, helper_thread_ctrl *hctrl) {
 	int opt, opt_idx;
 
 	if (cache_env_init(1)) {

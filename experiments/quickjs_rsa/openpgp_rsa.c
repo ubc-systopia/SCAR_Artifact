@@ -31,23 +31,9 @@ static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
 static uint64_t *sample_tsc[cache_line_count];
 static uint64_t *probe_time[cache_line_count];
 
-static pthread_barrier_t attack_threads_barrier;
+static pthread_barrier_t attacker_threads_barrier;
 
-static void PS_thread_config_init(PS_attacker_thread_config_t *config)
-{
-	memset(config, 0, sizeof(PS_attacker_thread_config_t));
-	config->test_name = test_name;
-	config->cache_line_count = cache_line_count;
-	config->profile_samples = profile_samples;
-	config->max_exec_cycles = max_exec_cycles;
-	config->victim_runs = victim_runs;
-	config->threads_barrier = &attack_threads_barrier;
-	config->sample_tsc = sample_tsc;
-	config->probe_time = probe_time;
-}
-
-static int qsort_lt(const void *a, const void *b)
-{
+static int qsort_lt(const void *a, const void *b) {
 	int64_t va = (*(int64_t *)a);
 	int64_t vb = (*(int64_t *)b);
 	if (va == vb) {
@@ -57,8 +43,7 @@ static int qsort_lt(const void *a, const void *b)
 	}
 }
 
-static int check_goto8_distribution(uint64_t *probes, int length)
-{
+static int check_goto8_distribution(uint64_t *probes, int length) {
 	uint64_t ts_diff[profile_samples];
 	memset(ts_diff, 0, sizeof(ts_diff));
 	for (int i = 1; i < length; ++i) {
@@ -76,8 +61,7 @@ static int check_goto8_distribution(uint64_t *probes, int length)
 	return fabs(2 - ratio) < 0.1;
 }
 
-static int check_sar_distribution(uint64_t *probes, int length)
-{
+static int check_sar_distribution(uint64_t *probes, int length) {
 	uint64_t ts_diff[profile_samples];
 	memset(ts_diff, 0, sizeof(ts_diff));
 	for (int i = 1; i < length; ++i) {
@@ -94,8 +78,8 @@ static int check_sar_distribution(uint64_t *probes, int length)
 	return fabs(1 - ratio) < 0.1;
 }
 
-static int identify_quickjs_target_sets(EVSet **evset_goto8, EVSet **evset_sar)
-{
+static int identify_quickjs_target_sets(EVSet **evset_goto8,
+                                        EVSet **evset_sar) {
 	config_t *cfg = get_config();
 	int found = 0;
 
@@ -241,8 +225,7 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8, EVSet **evset_sar)
 	return found;
 }
 
-int main()
-{
+int main() {
 	pthread_t thread0 = 0, thread1 = 0, thread2 = 0;
 	int err;
 	/* iso_cpu(); */
@@ -258,7 +241,7 @@ int main()
 		}
 	}
 
-	if (pthread_barrier_init(&attack_threads_barrier, NULL, 1) != 0) {
+	if (pthread_barrier_init(&attacker_threads_barrier, NULL, 1) != 0) {
 		log_error("Error initializing barrier\n");
 		return -1;
 	}
@@ -270,14 +253,14 @@ int main()
 
 	PS_attacker_thread_config_t pt_goto8, pt_sar;
 
-	PS_thread_config_init(&pt_goto8);
+	PS_thread_config_init(pt_goto8);
 	pt_goto8.label = "goto8";
 	pt_goto8.slot = 0;
 	pt_goto8.pin_cpu = -1;
 	/* pt_goto8.pin_cpu = pinned_cpu1; */
 	pt_goto8.target = (u8 *)((uintptr_t)target_goto8 + CACHE_LINE_SIZE);
 
-	PS_thread_config_init(&pt_sar);
+	PS_thread_config_init(pt_sar);
 	pt_sar.label = "sar";
 	pt_sar.slot = 1;
 	pt_sar.pin_cpu = -1;
@@ -292,7 +275,7 @@ int main()
 		return -1;
 	}
 
-	if (pthread_barrier_init(&attack_threads_barrier, NULL, 2) != 0) {
+	if (pthread_barrier_init(&attacker_threads_barrier, NULL, 2) != 0) {
 		log_error("Error initializing barrier\n");
 		return -1;
 	}
@@ -308,7 +291,7 @@ int main()
 	pthread_join(thread0, NULL);
 	pthread_join(thread1, NULL);
 
-	pthread_barrier_destroy(&attack_threads_barrier);
+	pthread_barrier_destroy(&attacker_threads_barrier);
 
 	return 0;
 }

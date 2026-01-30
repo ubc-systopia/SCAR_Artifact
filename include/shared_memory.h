@@ -18,10 +18,11 @@ typedef struct sync_ctx_t {
     pthread_barrier_t* barrier;
     pthread_mutex_t* mutex;
     sync_ctx_action_t* action;
-    uint64_t *data;
+    uint8_t *data;
 } sync_ctx_t;
 
 extern sync_ctx_t sync_ctx;
+extern const size_t sync_ctx_data_size;
 
 void init_sync_ctx(int proj_id);
 

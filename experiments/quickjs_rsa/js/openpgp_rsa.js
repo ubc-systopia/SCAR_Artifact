@@ -4,7 +4,7 @@ import * as std from 'std';
 import * as os from 'os';
 
 const key_id = std.getenv('KEY_ID') | 0;
-// console.log("key_id: ", key_id)
+console.log("key_id: ", key_id)
 
 const key_path =
 	FindProjectRoot() +

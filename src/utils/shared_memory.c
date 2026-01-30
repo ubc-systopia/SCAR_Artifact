@@ -1,6 +1,8 @@
 #include "shared_memory.h"
 
 #include <errno.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +16,8 @@
 #define MUTEX_PROJ_ID (1)
 #define ACTION_PROJ_ID (2)
 #define DATA_PROJ_ID (2)
+
+const size_t sync_ctx_data_size = 1024;
 
 pthread_barrier_t *shm_create_barrier(int proj_id) {
     key_t shmkey = ftok("/dev/null", proj_id + BARRIER_PROJ_ID);
@@ -138,11 +142,12 @@ void init_sync_ctx(int proj_id) {
     sync_ctx.barrier = shm_create_barrier(barrier_id);
     sync_ctx.mutex = shm_create_mutex(mutex_id);
     sync_ctx.action = shm_alloc("sync_ctx_action", action_id, sizeof(sync_ctx_action_t));
-    sync_ctx.data = (uint64_t *) shm_alloc("sync_ctx_data", data_id, sizeof(uint64_t));
+    sync_ctx.data = (uint8_t *) shm_alloc("sync_ctx_data", data_id, sizeof(uint8_t)*sync_ctx_data_size);
 }
 
 void free_sync_ctx(int proj_id) {
     const int k = 100;
+
     int barrier_id = k * proj_id + BARRIER_PROJ_ID;
     int mutex_id = k * proj_id + MUTEX_PROJ_ID;
     int action_id = k * proj_id + ACTION_PROJ_ID;
@@ -151,7 +156,7 @@ void free_sync_ctx(int proj_id) {
     shm_release_barrier(barrier_id);
     shm_release_mutex(mutex_id);
     shm_release("sync_ctx_action", action_id, sizeof(sync_ctx_action_t));
-    shm_release("sync_ctx_data", data_id, sizeof(sync_ctx_action_t));
+    shm_release("sync_ctx_data", data_id, sizeof(uint8_t)*sync_ctx_data_size);
 }
 
 void reset_sync_ctx(int proj_id) {
