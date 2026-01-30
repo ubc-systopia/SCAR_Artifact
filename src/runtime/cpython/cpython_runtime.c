@@ -56,13 +56,12 @@ void cpython_save_gt(const char* filename) {
     for (uint16_t j = 0; j < python_opcode_log_ctr; ++j) {
         uint64_t time = python_opcode_log[j][0];
         uint64_t opcode = python_opcode_log[j][1];
-
-        if (opcode == GT_INSTR_POW_ZERO)
-            fprintf(fp, "0:%lu:zero\n", time);
-        if (opcode == GT_INSTR_POW_WINDOW)
-            fprintf(fp, "1:%lu:window\n", time);
-        if (opcode == GT_INSTR_POW_TRAILING)
-            fprintf(fp, "2:%lu:trailing\n", time);
+        if (opcode == INSTR_POW_ZERO)
+			fprintf(fp, "0:%lu:zero\n", time);
+		if (opcode == INSTR_POW_WINDOW)
+			fprintf(fp, "1:%lu:window\n", time);
+		if (opcode == INSTR_POW_TRAILING)
+			fprintf(fp, "2:%lu:trailing\n", time);
     }
 
     fclose(fp);

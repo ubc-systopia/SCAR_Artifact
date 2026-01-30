@@ -6,9 +6,9 @@
 #include "Python.h"
 
 #define CPYTHON_TARGET_CACHELINE(V)                                             \
-    V(consume_zero, python_language_feature_targets[INSTR_POW_ZERO], 1)         \
-    V(absorb_window, python_language_feature_targets[INSTR_POW_WINDOW], 1)      \
-    V(absorb_trailing, python_language_feature_targets[INSTR_POW_TRAILING], 1)
+    V(consume_zero, python_language_feature_targets[2], 1)         \
+    V(absorb_window, python_language_feature_targets[3], 1)      \
+    V(absorb_trailing, python_language_feature_targets[5], 1)
 
 #define DECLARE_CACHE_LINE(NAME, BASE_ADDR, OFFSET) \
     uintptr_t target_##NAME;                        \
