@@ -1,2 +1,3 @@
 add_subdirectory(quickjs_rsa)
+add_subdirectory(cpython_dictionary)
 add_subdirectory(cpython_pow)

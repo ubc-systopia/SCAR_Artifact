@@ -1,0 +1,3 @@
+add_executable(cpython_dictionary cpython_dictionary.c)
+
+target_link_libraries(cpython_dictionary PRIVATE utils prime_probe cpython_runtime)
