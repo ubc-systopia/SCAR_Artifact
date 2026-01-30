@@ -10,9 +10,9 @@
 
 #include "log.h"
 
-const int pinned_cpu0 = 11;
-const int pinned_cpu1 = 13;
-const int pinned_cpu2 = 15;
+const int pinned_cpu0 = 10;
+const int pinned_cpu1 = 12;
+const int pinned_cpu2 = 14;
 
 /**
  * \description:

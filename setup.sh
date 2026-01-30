@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-sudo cset shield --kthread=on --cpu 11,13,15
+sudo cset shield --kthread=on --cpu 10,12,14
 
 for i in {0..15};
 do
