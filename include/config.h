@@ -1,7 +1,6 @@
 #pragma once
 
 #include "cache.h"
-#include "linked_list.h"
 
 #define CPU_CORE_NUM (16)
 
@@ -21,13 +20,6 @@ typedef struct config_t {
 
     // Flags for mmap (HUGETLB)
     int mmap_flag;
-
-    // Candidate buffer staring address
-    uintptr_t buffer_addr;
-
-    linked_list buffer;
-    linked_list candidate_set;
-    linked_list eviction_set;
 
     char* project_root;
 } config_t;

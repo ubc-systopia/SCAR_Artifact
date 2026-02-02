@@ -24,7 +24,7 @@ static uint64_t victim_runs = 1;
 static const char *test_name = "quickjs_jpeg_js";
 static char *js_eval_file;
 
-static enum { cache_line_count = 2, profile_samples = 1 << 20 };
+enum { cache_line_count = 2, profile_samples = 1 << 20 };
 static const uint64_t max_exec_cycles = (uint64_t)4e9;
 static uint64_t probe_time_arr[cache_line_count][profile_samples];
 static uint64_t sample_tsc_arr[cache_line_count][profile_samples];

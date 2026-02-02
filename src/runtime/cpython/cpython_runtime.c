@@ -1,5 +1,6 @@
 #include "cpython_runtime.h"
 
+#include "arch.h"
 #include "config.h"
 #include "log.h"
 #include "Python.h"

@@ -1,5 +1,6 @@
 #include <stdbool.h>
 
+#include "arch.h"
 #include "config.h"
 #include "log.h"
 #include "prime_probe.h"

@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define LOG_TRACE (0)
 #define LOG_DEBUG (1)
 #define LOG_INFO (2)
@@ -60,5 +64,10 @@ do {              \
 
 #define SEPARATION_LINE "----------------------------------------------------------------------"
 
+
 void log_fmt(int level, const char* file, int line, const char* fmt, ...);
 void log_raw(int level, const char* file, int line, const char* buffer);
+
+#ifdef __cplusplus
+}
+#endif
