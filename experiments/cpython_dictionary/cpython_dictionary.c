@@ -8,15 +8,16 @@
 #include "shared_memory.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static const char* dump_dir = "cpython_dict_profiling";
-static const uint64_t max_exec_cycles = (uint64_t)1e6;
+static const uint64_t max_exec_cycles = (uint64_t)2e6;
 enum { cache_line_count = 1, profile_samples = 1 << 16 };
 static uint64_t probe_time_arr[cache_line_count][profile_samples];
 static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
 static uint64_t* sample_tsc[cache_line_count];
 static uint64_t* probe_time[cache_line_count];
-static const int dict_entries = 1 << 10;
+static const int dict_entries = 1 << 16;
 static const int target_entries = 4;
 static const int dict_iterations = 32;
 static const int factor = 2;
@@ -98,15 +99,7 @@ static int infer(int j) {
     config_t *cfg = get_config();
 
     u32 unique[target_entries];
-    u32 full_sums[target_entries];
-    u32 c_sums[target_entries];
-    u32 t_sums[target_entries];
-    u32 u_sums[target_entries];
     memset(unique, 0, target_entries * sizeof(u32));
-    memset(full_sums, 0, target_entries * sizeof(u32));
-    memset(c_sums, 0, target_entries * sizeof(u32));
-    memset(t_sums, 0, target_entries * sizeof(u32));
-    memset(u_sums, 0, target_entries * sizeof(u32));
 
     for (int l3 = 0; l3 < cfg->l3.sets; ++l3) {
         u32 ctr = profiles[j * cfg->l3.sets + l3];
@@ -119,35 +112,33 @@ static int infer(int j) {
             if (c != t) {
                 unique[i]++;
             }
-
-            u32 tmp = (tctr - ctr) * (tctr - ctr);
-            full_sums[i] += tmp;
-            if (c && !t) c_sums[i] += tmp;
-            if (t && !c) t_sums[i] += tmp;
-            if (c && t) u_sums[i] += tmp;
         }
     }
 
     int index = -1;
+    double unique_sum = 0;
 
     for (int i = 0; i < target_entries; ++i) {
         log_info("%d: unique[%d] = %u", j, i, unique[i]);
-        log_info("%d: full_sums[%d] = %u", j, i, full_sums[i]);
-        log_info("%d: c_sums[%d] = %u", j, i, c_sums[i]);
-        log_info("%d: t_sums[%d] = %u", j, i, t_sums[i]);
-        log_info("%d: u_sums[%d] = %u", j, i, u_sums[i]);
-        if (unique[i] <= threshold) {
-            if (index != -1) {
-                if (unique[i] < unique[index]) {
-                    index = i;
-                }
-            } else {
+        unique_sum += unique[i];
+        if (index != -1) {
+            if (unique[i] < unique[index]) {
                 index = i;
             }
+        } else {
+            index = i;
         }
     }
 
-    return index;
+    double threshold = (unique_sum / target_entries) * 0.75;
+
+    log_info("Threshold: %lf", threshold);
+
+    if (unique[index] <= threshold) {
+        return index;
+    }
+
+    return -1;
 }
 
 int main(int argc, char* argv[]) {

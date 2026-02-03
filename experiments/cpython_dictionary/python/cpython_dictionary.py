@@ -2,7 +2,7 @@ import random
 
 d = {}
 
-for i in range(2**10):
+for i in range(2**16):
     d[f"i{i}"] = f"item {i}"
 
 key = random.choice(list(d.keys()))
