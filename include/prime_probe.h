@@ -59,12 +59,12 @@ typedef struct PP_attacker_thread_config_t {
 
 #define PP_thread_config_init(config) PS_thread_config_init(config)
 
-void PS_profile_once(EVSet *evset,
-                     int slot,
-                     uint64_t profile_samples,
-                     uint64_t max_exec_cycles,
-                     uint64_t **sample_tsc,
-                     uint64_t **probe_time);
+uint32_t PS_profile_once(EVSet *evset,
+                         int slot,
+                         uint64_t profile_samples,
+                         uint64_t max_exec_cycles,
+                         uint64_t **sample_tsc,
+                         uint64_t **probe_time);
 
 void PP_profile_once(EVSet *evset,
                      int slot,

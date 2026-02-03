@@ -5,12 +5,12 @@
 #include <stdint.h>
 #include "prime_probe.h"
 
-void PS_profile_once(EVSet *evset,
-                     int slot,
-                     uint64_t profile_samples,
-                     uint64_t max_exec_cycles,
-                     uint64_t **sample_tsc,
-                     uint64_t **probe_time) {
+uint32_t PS_profile_once(EVSet *evset,
+                         int slot,
+                         uint64_t profile_samples,
+                         uint64_t max_exec_cycles,
+                         uint64_t **sample_tsc,
+                         uint64_t **probe_time) {
 	uint64_t tsc0, tsc1;
 	uint8_t *scope = evset->addrs[0];
 	evchain *sf_chain = evchain_build(evset->addrs, SF_ASSOC);
@@ -68,7 +68,7 @@ void PS_profile_once(EVSet *evset,
 	          tsc1 - tsc0,
 	          index);
 
-	return;
+	return index;
 }
 
 void *PS_attacker_thread(void *args) {
@@ -254,13 +254,14 @@ void dump_profiling_trace(const char *dump_prefix,
                           int cl_cnt,
                           int sp_cnt) {
 	static int trace_idx = 0;
-	char output_dir[256], output_file[256];
+	char output_dir[128], output_file[256];
 
 	sprintf(output_dir, "output/%s", dump_prefix);
 	create_directory(output_dir);
 
 	FILE *fp;
-	sprintf(output_file, "%s/r%d.out", output_dir, dump_id);
+	snprintf(
+	    output_file, sizeof(output_file), "%s/r%d.out", output_dir, dump_id);
 	fp = fopen(output_file, "w");
 	if (fp == NULL) {
 		log_error("Error opening output file %s", output_file);
@@ -286,13 +287,17 @@ void dump_profiling_traces(const char *dump_prefix,
                            int sp_cnt,
                            int reset) {
 	static int trace_idx = 0;
-	char output_dir[256], output_file[256];
+	char output_dir[128], output_file[256];
 
 	if (reset) {
 		trace_idx = 0;
 	}
 
-	sprintf(output_dir, "output/%s_r%05d", dump_prefix, victim_runs);
+	snprintf(output_dir,
+	         sizeof(output_file),
+	         "output/%s_r%05d",
+	         dump_prefix,
+	         victim_runs);
 	if (trace_idx == 0) {
 		create_directory(output_dir);
 	}

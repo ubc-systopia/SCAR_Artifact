@@ -6,10 +6,11 @@
 #include "prime_probe.h"
 #include "Python.h"
 #include "shared_memory.h"
+#include <stdint.h>
 #include <stdio.h>
 
 static const char* dump_dir = "cpython_dict_profiling";
-static const int max_exec_cycles = (int)1e6;
+static const uint64_t max_exec_cycles = (uint64_t)1e6;
 enum { cache_line_count = 1, profile_samples = 1 << 16 };
 static uint64_t probe_time_arr[cache_line_count][profile_samples];
 static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
@@ -17,8 +18,8 @@ static uint64_t* sample_tsc[cache_line_count];
 static uint64_t* probe_time[cache_line_count];
 static const int dict_entries = 1 << 10;
 static const int target_entries = 4;
-static const int dict_iterations = 10000;
-static const int factor = 4;
+static const int dict_iterations = 32;
+static const int factor = 2;
 static const int threshold = 8;
 
 static const int attack_iterations = 4;
@@ -81,15 +82,7 @@ static void profile(int i, int j) {
             sync_ctx_set_action(SYNC_CTX_PROBE);
             *sync_ctx.data = i;
 
-            pthread_barrier_wait(sync_ctx.barrier);
-
-            u32 res = cpython_PS_profile_once(evset, 0, max_exec_cycles);
-
-            if (sync_ctx_get_action() == SYNC_CTX_START) {
-                log_warn("Insufficient profiler iterations");
-            }
-
-            pthread_barrier_wait(sync_ctx.barrier);
+            u32 res = PS_profile_once(evset, 0, profile_samples, max_exec_cycles, sample_tsc, probe_time);
 
             profiles[j * cfg->l3.sets + l3_set] = res;
 
