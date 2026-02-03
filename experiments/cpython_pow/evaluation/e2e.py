@@ -11,6 +11,7 @@ from datetime import datetime
 from extract import extract
 from metrics import aggregate_metrics
 
+
 class ResultsLogger(object):
     def __init__(self, out):
         self.terminal = out
@@ -25,6 +26,7 @@ class ResultsLogger(object):
         # this handles the flush command by doing nothing.
         # you might want to specify some extra behavior here.
         pass
+
 
 args_parser = ArgumentParser(
     prog="cpython_builtin_pow_lib_rsa_cross_e2e",
@@ -95,16 +97,16 @@ if not args.analyze_only:
             [
                 project_dir / "build/src/runtime/cpython/cpython_rt",
                 project_dir / "experiments/cpython_pow/python/cpython_pow.py",
-                "1"
-                ],
-             stdout=subprocess.DEVNULL,
+                "1",
+            ],
+            stdout=subprocess.DEVNULL,
         )
         time.sleep(0.1)
         attacker = subprocess.Popen(
             [
                 project_dir / "build/experiments/cpython_pow/cpython_pow",
                 str(args.repetitions),
-                ],
+            ],
             stdout=subprocess.DEVNULL,
         )
 
