@@ -5,6 +5,7 @@
 #include "log.h"
 #include "Python.h"
 #include "shared_memory.h"
+#include <stdint.h>
 
 #define PATH_LEN (256)
 
@@ -16,19 +17,23 @@ void cpython_init(char *file) {
 
     PyConfig_InitIsolatedConfig(&config);
 
-    snprintf(path, PATH_LEN, "%s/build/cpython/venv/bin/python", get_config()->project_root);
+    snprintf(path,
+             PATH_LEN,
+             "%s/build/cpython/venv/bin/python",
+             get_config()->project_root);
     PyConfig_SetBytesString(&config, &config.executable, path);
 
     PyStatus status = Py_InitializeFromConfig(&config);
     PyConfig_Clear(&config);
 
     if (PyStatus_Exception(status)) {
-        log_error("Failed to set up CPython environment in %s: %s", status.func,
+        log_error("Failed to set up CPython environment in %s: %s",
+                  status.func,
                   status.err_msg);
         Py_ExitStatusException(status);
     }
 
-    FILE* fp = fopen(file, "r");
+    FILE *fp = fopen(file, "r");
     if (fp == NULL) {
         log_error("Failed to read CPython init file: %s", file);
         exit(1);
@@ -36,7 +41,9 @@ void cpython_init(char *file) {
 
     int res = PyRun_SimpleFile(fp, file);
     if (res != 0) {
-        log_error("Failed to set up initialize CPython context", status.func, status.err_msg);
+        log_error("Failed to set up initialize CPython context",
+                  status.func,
+                  status.err_msg);
         exit(1);
     }
 
@@ -47,8 +54,8 @@ void cpython_free() {
     Py_Finalize();
 }
 
-void cpython_save_gt(const char* filename) {
-    FILE* fp = fopen(filename, "w");
+void cpython_save_gt(const char *filename) {
+    FILE *fp = fopen(filename, "w");
     if (fp == NULL) {
         log_error("Error opening ground truth file %s", filename);
         return;
@@ -58,27 +65,31 @@ void cpython_save_gt(const char* filename) {
         uint64_t time = python_opcode_log[j][0];
         uint64_t opcode = python_opcode_log[j][1];
         if (opcode == INSTR_POW_ZERO)
-			fprintf(fp, "0:%lu:zero\n", time);
-		if (opcode == INSTR_POW_WINDOW)
-			fprintf(fp, "1:%lu:window\n", time);
-		if (opcode == INSTR_POW_TRAILING)
-			fprintf(fp, "2:%lu:trailing\n", time);
+            fprintf(fp, "0:%lu:zero\n", time);
+        if (opcode == INSTR_POW_WINDOW)
+            fprintf(fp, "1:%lu:window\n", time);
+        if (opcode == INSTR_POW_TRAILING)
+            fprintf(fp, "2:%lu:trailing\n", time);
     }
 
     fclose(fp);
 }
 
-void cpython_eval_loop(char* file, uint32_t iterations) {
+void cpython_eval_loop(char *file, uint32_t iterations) {
+    uint32_t extra_waiting_time = 20000;
+
     log_info("Start cpython eval loop");
 
     reset_sync_ctx(CPYTHON_PROJ_ID);
 
     cpython_init(file);
-    PyObject* module = PyImport_ImportModule("__main__");
-    PyObject* test = PyObject_GetAttrString(module, "test");
-    if (!test) PyErr_Clear();
-    PyObject* probe = PyObject_GetAttrString(module, "probe");
-    if (!probe) PyErr_Clear();
+    PyObject *module = PyImport_ImportModule("__main__");
+    PyObject *test = PyObject_GetAttrString(module, "test");
+    if (!test)
+        PyErr_Clear();
+    PyObject *probe = PyObject_GetAttrString(module, "probe");
+    if (!probe)
+        PyErr_Clear();
 
     // Signal init done
     pthread_barrier_wait(sync_ctx.barrier);
@@ -96,25 +107,29 @@ void cpython_eval_loop(char* file, uint32_t iterations) {
         if (action == SYNC_CTX_START) {
             assert(test != NULL);
             for (int i = 0; i < iterations; i++) {
+                tsc = rdtscp();
                 PyObject *ret = PyObject_CallNoArgs(test);
 
                 assert(ret != NULL);
                 PyObject tmp = *ret;
                 Py_XDECREF(ret);
 
-                while (rdtscp() - tsc < 20000) {}
+                while (rdtscp() - tsc < extra_waiting_time) {
+                }
             }
         } else {
             assert(probe != NULL);
             PyObject *arg = PyLong_FromUnsignedLong(*sync_ctx.data);
             for (int i = 0; i < iterations; i++) {
+                tsc = rdtscp();
                 PyObject *ret = PyObject_CallOneArg(probe, arg);
 
                 assert(ret != NULL);
                 PyObject tmp = *ret;
                 Py_XDECREF(ret);
 
-                while (rdtscp() - tsc < 20000) {}
+                while (rdtscp() - tsc < extra_waiting_time) {
+                }
             }
         }
 
