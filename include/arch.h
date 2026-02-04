@@ -43,9 +43,7 @@ extern const int pinned_cpu0;
 extern const int pinned_cpu1;
 extern const int pinned_cpu2;
 
-int iso_cpu();
-
-int iso_pin_cpu(int cpu_id);
+int pin_cpu(int cpu_id);
 
 inline __attribute__((always_inline)) void __cpuid(unsigned int* eax,
 												   unsigned int* ebx,
@@ -150,5 +148,3 @@ inline __attribute__((always_inline)) uint64_t timed_access(void* addr) {
 }
 
 int level_in_cache(int level);
-
-void wrmsr_on_cpu(uint32_t reg, int cpu, const char* regvals);

@@ -84,7 +84,7 @@ void profile() {
 }
 
 int main(int argc, char **argv) {
-    iso_pin_cpu(pinned_cpu0);
+    pin_cpu(pinned_cpu0);
 
     if (argc > 1) {
         char *endptr = NULL;

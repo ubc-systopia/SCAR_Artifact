@@ -228,7 +228,6 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8,
 int main() {
 	pthread_t thread0 = 0, thread1 = 0, thread2 = 0;
 	int err;
-	/* iso_cpu(); */
 	quickjs_get_bytecode_handler_cacheline();
 
 	const char *env_victim_runs = getenv("VICTIM_RUNS");

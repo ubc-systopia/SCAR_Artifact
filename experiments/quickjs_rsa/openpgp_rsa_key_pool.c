@@ -262,7 +262,6 @@ void openpgp_rsa_key_pool() {
 }
 
 int main() {
-	/* iso_cpu(); */
 	quickjs_get_bytecode_handler_cacheline();
 
 	const char *env_victim_runs = getenv("VICTIM_RUNS");
