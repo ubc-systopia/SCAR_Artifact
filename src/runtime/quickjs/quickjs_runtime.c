@@ -158,7 +158,7 @@ void *quickjs_runtime_thread(void *param) {
 	/* js_std_reset_ground_truth(); */
 
 	pthread_barrier_wait(sync_ctx.barrier);
-	log_info("QuickJS runtime thread start: %s", js_eval_file);
+	log_info("QuickJS runtime thread ready: %s", js_eval_file);
 
 	tsc0 = rdtscp();
 	for (int i = 0; i < victim_runs; ++i) {

@@ -145,8 +145,13 @@ void PP_profile_once(EVSet *evset,
 	_lfence();
 	prime_skx_sf_evset_para(evset, array_repeat, l2_repeat);
 
-	u64 last_tsc, tsc0;
-	last_tsc = tsc0 = _rdtsc();
+	if (slot == 0) {
+		sync_ctx_set_action(SYNC_CTX_START);
+		pthread_barrier_wait(sync_ctx.barrier);
+	}
+
+	u64 tsc1, tsc0;
+	tsc1 = tsc0 = _rdtsc();
 	while (_rdtsc() - tsc0 < max_exec_cycles && index < profile_samples) {
 		u64 now_tsc = _rdtsc();
 
@@ -167,17 +172,29 @@ void PP_profile_once(EVSet *evset,
 			}
 			last_aux = aux;
 		}
-		last_tsc = now_tsc;
+		tsc1 = now_tsc;
 	}
 
-	log_info(
-	    "Prime+Probe %d (%s) detects %d times of eviction during %lu cycles, "
-	    "one noise per %lf cycles on average",
-	    slot,
-	    label,
-	    index,
-	    last_tsc - tsc0,
-	    (double)(last_tsc - tsc0) / (index == 0 ? 1 : index));
+	if (slot == 0) {
+		if (sync_ctx_get_action() != SYNC_CTX_PAUSE) {
+			log_warn("Profiling time/iteration not enough");
+		}
+		pthread_barrier_wait(sync_ctx.barrier);
+	}
+
+	log_info("Prime+Probe %d (%s) rdtsc:\n"
+	         "pid:\t%d\n"
+	         "start:\t%ld\n"
+	         "end:\t%ld\n"
+	         "diff:\t%ld\n"
+	         "index cnt:\t%ld",
+	         slot,
+	         label,
+	         getpid(),
+	         tsc0,
+	         tsc1,
+	         tsc1 - tsc0,
+	         index);
 
 	return;
 }
@@ -200,19 +217,11 @@ void *PP_attacker_thread(void *args) {
 	uint64_t **sample_tsc = pt_config->sample_tsc;
 	uint64_t **probe_time = pt_config->probe_time;
 
-	log_info("Parallel Prime+Probe threhold: %ld", pt_config->threshold);
-
-	if (slot == 0) {
-		log_info("Prime+Probe wait for the warmup run");
-		/* pthread_barrier_wait(&quickjs_barrier); */
-	}
+	log_info("Parallel Prime+Probe %s threhold: %ld", label, threshold);
 
 	tsc0 = rdtscp();
 	for (int i = 0; i < victim_runs; ++i) {
 		pthread_barrier_wait(thread_barrier);
-		if (slot == 0) {
-			/* pthread_barrier_wait(&quickjs_barrier); */
-		}
 
 		int index = 0;
 
@@ -242,8 +251,6 @@ void *PP_attacker_thread(void *args) {
 		}
 	}
 	tsc1 = rdtscp();
-	log_info(
-	    "Profiler rdtsc %d: %ld %ld %ld", getpid(), tsc0, tsc1, tsc1 - tsc0);
 	return NULL;
 }
 
@@ -270,11 +277,18 @@ void dump_profiling_trace(const char *dump_prefix,
 	log_info("Dump trace to %s", output_file);
 
 	for (int i = 0; i < sp_cnt; ++i) {
+		bool has_hits = false;
 		for (int j = 0; j < cl_cnt; ++j) {
+			if (sample_tsc[j][i] > 0) {
+				has_hits = true;
+			}
 			fprintf(fp, "%lu:%lu\t", sample_tsc[j][i], reload_time[j][i]);
 			sample_tsc[j][i] = reload_time[j][i] = 0;
 		}
 		fprintf(fp, "\n");
+		if (!has_hits) {
+			break;
+		}
 	}
 	fclose(fp);
 }
@@ -312,11 +326,18 @@ void dump_profiling_traces(const char *dump_prefix,
 	log_info("Dump trace to %s", output_file);
 
 	for (int i = 0; i < sp_cnt; ++i) {
+		bool has_hits = false;
 		for (int j = 0; j < cl_cnt; ++j) {
+			if (sample_tsc[j][i] > 0) {
+				has_hits = true;
+			}
 			fprintf(fp, "%lu:%lu\t", sample_tsc[j][i], reload_time[j][i]);
 			sample_tsc[j][i] = reload_time[j][i] = 0;
 		}
 		fprintf(fp, "\n");
+		if (!has_hits) {
+			break;
+		}
 	}
 	fclose(fp);
 }

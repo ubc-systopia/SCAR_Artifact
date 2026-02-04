@@ -26,7 +26,7 @@ export function FindProjectRoot() {
 export function Fixture(filename) {
 	var filepath = FindProjectRoot() + filename;
 	var file = std.open(filepath, 'r');
-	console.log("decode: ", filepath)
+	// console.log("decode: ", filepath)
 	if (file == null) {
 		console.log('Cannot file ' + filepath);
 	}

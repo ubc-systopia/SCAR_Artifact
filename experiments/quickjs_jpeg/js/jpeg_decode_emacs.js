@@ -12,6 +12,6 @@ import {
 } from './utils.js';
 
 var jpegData = Fixture(
-	'./experiments/quickjs_jpeg/js/emacs_gs.jpg',
+	'./experiments/quickjs_jpeg/evaluation/emacs_gs.jpg',
 );
 var rawImageData = decode(jpegData, { useTArray: true });

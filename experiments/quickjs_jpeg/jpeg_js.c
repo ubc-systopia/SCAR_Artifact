@@ -44,7 +44,8 @@ int main(int argc, char **argv) {
 	pthread_t thread0 = 0, thread1 = 0, thread2 = 0, thread3 = 0;
 	int err;
 
-	init_sync_ctx(QUICKJS_PROJ_ID);
+    get_config();
+	reset_sync_ctx(QUICKJS_PROJ_ID);
 	quickjs_get_bytecode_handler_cacheline();
 
 	srand(time(NULL));
@@ -99,6 +100,10 @@ int main(int argc, char **argv) {
 	err = pthread_create(&thread0, NULL, quickjs_runtime_thread, &vt_config);
 	if (err != 0)
 		log_error("can't create thread0 :[%s]", strerror(err));
+
+    log_info("Prime+Probe wait for the warmup run");
+    pthread_barrier_wait(sync_ctx.barrier);
+    log_info("Prime+Probe wait for the warmup done");
 
 	err = pthread_create(&thread1, NULL, PP_attacker_thread, &pt_goto16);
 	if (err != 0)
