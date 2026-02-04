@@ -33,3 +33,55 @@ add_custom_target(cpython DEPENDS ${CPYTHON_SHARED_LIB})
 
 # LLCFeasible
 add_subdirectory(LLCFeasible)
+
+# V8
+message("Fetching V8...")
+execute_process(
+        COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} fetch v8
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+message("Checking out target commit...")
+execute_process(
+        COMMAND git checkout 13.1-lkgr
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+message("Syncing V8...")
+execute_process(
+        COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} gclient sync -D
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+message("Configuring V8...")
+set(GN_ARGS "
+dcheck_always_on = false
+is_component_build = false
+use_custom_libcxx = false
+v8_monolithic = true
+v8_use_external_startup_data = false
+is_debug = true
+symbol_level = 2
+target_cpu = \"x64\"
+v8_enable_debugging_features = true
+v8_enable_backtrace = true
+v8_enable_fast_mksnapshot = true
+v8_enable_slow_dchecks = true
+v8_optimized_debug = false
+v8_expose_symbols = true
+v8_symbol_level = 2
+cppgc_enable_object_names = true
+v8_enable_disassembler = true
+v8_enable_gdbjit = true
+")
+string(REPLACE "\n" " " GN_ARGS "${GN_ARGS}")
+execute_process(
+        COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} gn gen out.gn/x64.debug --args=${GN_ARGS}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+
+set(V8_STATIC_LIB
+	"${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_monolith.a"
+	"${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_libbase.a"
+	"${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_libplatform.a"
+	CACHE FILEPATH "V8 static libraries")
+
+add_custom_command(
+        OUTPUT ${V8_STATIC_LIB}
+        COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} ninja -C out.gn/x64.debug
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+
+add_custom_target(v8 DEPENDS ${V8_STATIC_LIB})

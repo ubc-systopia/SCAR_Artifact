@@ -17,9 +17,7 @@ target_compile_options(v8_runtime PUBLIC
 )
 
 target_link_libraries(v8_runtime PUBLIC
-	"${CMAKE_SOURCE_DIR}/third_party/v8/out.gn/x64.debug/obj/libv8_monolith.a"
-	"${CMAKE_SOURCE_DIR}/third_party/v8/out.gn/x64.debug/obj/libv8_libbase.a"
-	"${CMAKE_SOURCE_DIR}/third_party/v8/out.gn/x64.debug/obj/libv8_libplatform.a"
+	${V8_STATIC_LIB}
 	dl
 	utils
 )
