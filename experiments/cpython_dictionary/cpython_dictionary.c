@@ -17,7 +17,7 @@ static uint64_t probe_time_arr[cache_line_count][profile_samples];
 static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
 static uint64_t *sample_tsc[cache_line_count];
 static uint64_t *probe_time[cache_line_count];
-static const int dict_entries = 1 << 6;
+static const int dict_entries = 1 << 16;
 static const int target_entries = 4;
 static const int dict_iterations = 64;
 static const float factor = 0.75;
