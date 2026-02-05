@@ -1,0 +1,9 @@
+# CIPD / depot_tools / gclient
+.cipd/
+.gclient
+.gclient_entries
+.gclient_previous_sync_commits
+.gcs_entries
+
+# V8 checkout
+v8/

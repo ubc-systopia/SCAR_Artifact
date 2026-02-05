@@ -1,0 +1,5 @@
+add_subdirectory(quickjs_rsa)
+add_subdirectory(quickjs_jpeg)
+add_subdirectory(cpython_dictionary)
+add_subdirectory(cpython_pow)
+add_subdirectory(v8_ecdh)

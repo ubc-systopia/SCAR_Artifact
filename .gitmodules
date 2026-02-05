@@ -1,0 +1,15 @@
+[submodule "third_party/cpython"]
+	path = third_party/cpython
+	url = git@github.com:anonymous-sc-language-runtimes/cpython.git
+	branch = anonymous-sc-language-runtimes
+[submodule "third_party/quickjs"]
+	path = third_party/quickjs
+	url = git@github.com:anonymous-sc-language-runtimes/quickjs.git
+	branch = anonymous-sc-language-runtimes
+[submodule "third_party/LLCFeasible"]
+	path = third_party/LLCFeasible
+	url = git@github.com:anonymous-sc-language-runtimes/LLCFeasible.git
+	branch = anonymous-sc-language-runtimes
+[submodule "third_party/depot_tools"]
+	path = third_party/depot_tools
+	url = https://chromium.googlesource.com/chromium/tools/depot_tools
