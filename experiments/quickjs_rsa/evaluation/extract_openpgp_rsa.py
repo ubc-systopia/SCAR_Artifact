@@ -581,7 +581,7 @@ def infer_directory(skey, output_dir):
 
 
 def infer_key_pool(output_dir):
-    pattern = r"key(\d+)+"
+    pattern = r"quickjs_openpgp_rsa_key_pool_key(\d+)+"
     task_keys = progress.add_task(
         "[blue]Resolving keys...", total=len(os.listdir(output_dir))
     )

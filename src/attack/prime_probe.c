@@ -308,7 +308,7 @@ void dump_profiling_traces(const char *dump_prefix,
 	}
 
 	snprintf(output_dir,
-	         sizeof(output_file),
+	         sizeof(output_dir),
 	         "output/%s_r%05d",
 	         dump_prefix,
 	         victim_runs);

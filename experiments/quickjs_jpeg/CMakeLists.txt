@@ -1,3 +1,3 @@
-add_executable(jpeg_js jpeg_js.c)
+add_executable(quickjs_jpeg quickjs_jpeg.c)
 
-target_link_libraries(jpeg_js PRIVATE utils prime_probe quickjs_runtime)
+target_link_libraries(quickjs_jpeg PRIVATE utils prime_probe quickjs_runtime)

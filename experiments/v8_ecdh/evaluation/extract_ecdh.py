@@ -464,23 +464,21 @@ def infer_all_keys(all_keys_dir):
     futures = []
 
     ec_keys = {}
+
+    pattern = r"v8_ecdh_key_pool_key(\d+)+"
     for subdir in dir_path.iterdir():
         if not subdir.is_dir():
             continue
-
-        parts = subdir.name.split("_r")
-        if len(parts) < 2 or not parts[-1]:
-            continue
-        key_id_str = parts[-1][-5:]
-        try:
-            key_id = int(key_id_str)
-        except ValueError:
+        matches = re.search(pattern, subdir.name)
+        if matches:
+            key_id = int(matches.group(1))
+        else:
             continue
 
         if not key_id in ec_keys:
             ec_keys[key_id] = EC_KEY.load_ec_key(
                 find_project_root()
-                + f"/experiments/resources/ec_key_pool/ec_key_{key_id}.json"
+                + f"/experiments/v8_ecdh/ec_key_pool/ec_key_{key_id}.json"
             )
 
         ec_key = ec_keys[key_id]

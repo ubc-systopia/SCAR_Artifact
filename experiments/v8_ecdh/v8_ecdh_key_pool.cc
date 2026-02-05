@@ -18,7 +18,8 @@ extern "C" {
 #include "prime_probe.h"
 }
 
-static const char *dump_dir = "v8_ecdh_key_pool";
+static const char *test_name = "v8_ecdh_key_pool";
+static char dump_dir[256];
 uintptr_t jit_func, jit_machine_code;
 uint64_t ecdh_false_branch_offset = 0x1a6a, ecdh_true_branch_offset = 0x1b7a;
 static const int max_exec_cycles = (int)1e8;
@@ -36,8 +37,8 @@ enum AttackPrimitive {
 const char *ec_key_pool_rpath = "experiments/v8_ecdh/ec_key_pool";
 static enum AttackPrimitive attack_primitive = PRIME_SCOPE;
 
-const int victim_runs = 16;
-const int key_num = 1;
+const int victim_runs = 100;
+const int key_num = 100;
 
 static pthread_barrier_t attacker_local_barrier;
 
@@ -108,8 +109,10 @@ void *v8_attacker_thread(void *param) {
 
 			log_info("Key %d slot %d find %d hits", i, slot, index);
 			if (slot == 0) {
+				snprintf(
+				    dump_dir, sizeof(dump_dir), "%s_key%05d", test_name, i);
 				dump_profiling_traces(dump_dir,
-				                      i,
+				                      victim_runs,
 				                      sample_tsc,
 				                      probe_time,
 				                      cache_line_count,
@@ -322,7 +325,7 @@ int v8_run(int argc, char *argv[]) {
 						                            try_catch.Exception());
 						log_error("Set key pair script failed: %s\n",
 						          *error ? *error : "unknown error");
-                        log_error("set_keypair_str:\n%s", set_keypair_str);
+						log_error("set_keypair_str:\n%s", set_keypair_str);
 					}
 
 					for (int j = 0; j < 10; ++j) {

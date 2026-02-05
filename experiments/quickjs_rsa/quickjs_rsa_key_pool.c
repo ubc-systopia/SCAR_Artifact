@@ -22,7 +22,8 @@
 #include <x86intrin.h>
 
 enum { cache_line_count = 2, profile_samples = 1 << 15 };
-static uint64_t victim_runs = 1;
+static uint64_t victim_runs = 128;
+static const int key_pool_size = 128;
 static const char *test_name = "quickjs_openpgp_rsa_key_pool";
 static const uint64_t max_exec_cycles = (uint64_t)3e9;
 
@@ -230,8 +231,7 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8,
 void openpgp_rsa_key_pool() {
 	pthread_t thread0 = 0, thread1 = 0, thread2 = 0;
 	int err;
-	const int key_pool_size = 128;
-	char test_key_name[256];
+    char test_key_name[256];
 
 	if (pthread_barrier_init(&attacker_threads_barrier, NULL, 2) != 0) {
 		log_error("Error initializing barrier\n");

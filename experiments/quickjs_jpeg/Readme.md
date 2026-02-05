@@ -15,9 +15,11 @@ Jpeg-js's IDCT implementation contains secret-dependent control-flow which resul
 To run the evaluation execute the following command:
 
 ```bash
-TODO
+cd build
+./experiments/quickjs_jpeg/quickjs_jpeg ./experiments/quickjs_jpeg/js/jpeg_decode_emacs.js
 ```
 
 ```bash
-TODO
+cd SCAR_Artifact
+python evaluation/extract_jpeg_js.py -f build/output/quickjs_jpeg_js_r00001/r0.out
 ```
