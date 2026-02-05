@@ -2,6 +2,13 @@
 
 Artifact for "Cache Side Channel Attacks on Language Runtimes"
 
+## Hardware/Software Setup
+- CPU: Intel Xeon(R) Silver 4390Y SP
+- DVFS: `Off`
+- CpuFreq: `2.4GHz`
+- Hyperthreading: `Off`
+- ASLR: `Off`
+
 ## Case Studies
 1. [QuickJS — OpenPGP.js](./experiments/quickjs_rsa/Readme.md)
 2. [QuickJS — jpeg-js](./experiments/quickjs_jpeg/Readme.md)
