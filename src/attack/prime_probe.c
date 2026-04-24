@@ -94,7 +94,8 @@ void *PS_attacker_thread(void *args) {
 	i64 threshold = detected_cache_lats.l2_thresh;
 
 	if (pt_config->pin_cpu != -1) {
-		iso_pin_cpu(pt_config->pin_cpu);
+        pin_cpu(pt_config->pin_cpu);
+		/* iso_pin_cpu(pt_config->pin_cpu); */
 	}
 
 	tsc0 = rdtscp();
@@ -323,7 +324,7 @@ void dump_profiling_traces(const char *dump_prefix,
 		log_error("Error opening output file %s", output_file);
 		return;
 	}
-	log_info("Dump trace to %s", output_file);
+	log_trace("Dump trace to %s", output_file);
 
 	for (int i = 0; i < sp_cnt; ++i) {
 		bool has_hits = false;
