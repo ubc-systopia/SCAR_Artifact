@@ -16,6 +16,8 @@ target_compile_options(v8_runtime PUBLIC
 	-DV8_ENABLE_CHECKS
 )
 
+add_dependencies(v8_runtime v8)
+
 target_link_libraries(v8_runtime PUBLIC
 	${V8_STATIC_LIB}
 	dl
