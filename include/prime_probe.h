@@ -47,15 +47,17 @@ typedef struct PP_attacker_thread_config_t {
 	EVSet *evset;
 } PP_attacker_thread_config_t;
 
-#define PS_thread_config_init(config)                   \
-	config.test_name = test_name;                       \
-	config.cache_line_count = cache_line_count;         \
-	config.profile_samples = profile_samples;           \
-	config.max_exec_cycles = max_exec_cycles;           \
-	config.victim_runs = victim_runs;                   \
-	config.threads_barrier = &attacker_threads_barrier; \
-	config.sample_tsc = sample_tsc;                     \
-	config.probe_time = probe_time;
+#define PS_thread_config_init(config)                       \
+	do {                                                    \
+		config.test_name = test_name;                       \
+		config.cache_line_count = cache_line_count;         \
+		config.profile_samples = profile_samples;           \
+		config.max_exec_cycles = max_exec_cycles;           \
+		config.victim_runs = victim_runs;                   \
+		config.threads_barrier = &attacker_threads_barrier; \
+		config.sample_tsc = sample_tsc;                     \
+		config.probe_time = probe_time;                     \
+	} while (0)
 
 #define PP_thread_config_init(config) PS_thread_config_init(config)
 
@@ -99,5 +101,5 @@ void dump_profiling_traces(const char *dump_prefix,
 EVSet ***build_l2_evsets_all(void);
 EVCands ***build_evcands_all(EVBuildConfig *conf, EVSet ***l2evsets);
 EVSet *get_sf_kth_evset(int k);
-EVSet *prepare_evsets(u8 *target, helper_thread_ctrl *hctrl);
+EVSet *prepare_evset(u8 *target, helper_thread_ctrl *hctrl);
 void prepare_evset_thres(uintptr_t target, EVSet **evset, int *threshold);

@@ -103,7 +103,7 @@ static bool check_and_set_sf_evset(u8 *target, EVSet *evset) {
 	return true;
 }
 
-EVSet *prepare_evsets(u8 *target, helper_thread_ctrl *hctrl) {
+EVSet *prepare_evset(u8 *target, helper_thread_ctrl *hctrl) {
 	EVSet *l2_evset = NULL;
 	for (u32 i = 0; i < max_retry; i++) {
 		l2_evset = build_l2_EVSet(target, &def_l2_ev_config, NULL);
@@ -146,7 +146,7 @@ void prepare_evset_thres(uintptr_t target, EVSet **evset, int *threshold) {
 	}
 	int retry = 4;
 	for (int i = 0; i < retry; ++i) {
-		*evset = prepare_evsets((uint8_t *)target, &hctrl);
+		*evset = prepare_evset((uint8_t *)target, &hctrl);
 		if (*evset != NULL) {
 			*threshold = calibrate_para_probe_lat((uint8_t *)target,
 			                                      *evset,

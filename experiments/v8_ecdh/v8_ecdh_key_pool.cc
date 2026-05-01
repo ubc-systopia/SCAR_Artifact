@@ -263,7 +263,7 @@ int v8_run(int argc, char *argv[]) {
 					evsets[i] = NULL;
 					for (int r = 0; r < retry && evsets[i] == NULL; ++r) {
 						evsets[i] =
-						    prepare_evsets((u8 *)target_addr[i], &hctrl);
+						    prepare_evset((u8 *)target_addr[i], &hctrl);
 					}
 					if (evsets[i] == NULL) {
 						log_error("failed to build evset");
