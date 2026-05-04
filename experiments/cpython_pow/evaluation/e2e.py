@@ -8,7 +8,7 @@ import time
 from argparse import ArgumentParser
 from datetime import datetime
 
-from extract import extract
+from extract import extract_FR
 from metrics import aggregate_metrics
 
 
@@ -127,7 +127,7 @@ if not args.traces_only:
         print(f"Analyzing trace {i + 1}/{args.iterations}")
         os.chdir(str(i))
         # TODO: extract and analyze separately
-        r = extract(".")
+        r = extract_FR(".")
         for j, item in enumerate(r):
             if j < len(res):
                 res[j].append(item)

