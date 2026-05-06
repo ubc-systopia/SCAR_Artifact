@@ -18,7 +18,7 @@ typedef struct PS_attacker_thread_config_t {
 	int slot;
 	int pin_cpu;
 	int cache_line_count;
-	int profile_samples;
+	int profile_iterations;
 	uint64_t max_exec_cycles;
 	int victim_runs;
 	pthread_barrier_t *threads_barrier;
@@ -36,7 +36,7 @@ typedef struct PP_attacker_thread_config_t {
 	int slot;
 	int pin_cpu;
 	int cache_line_count;
-	int profile_samples;
+	int profile_iterations;
 	uint64_t max_exec_cycles;
 	int victim_runs;
 	pthread_barrier_t *threads_barrier;
@@ -51,7 +51,7 @@ typedef struct PP_attacker_thread_config_t {
 	do {                                                    \
 		config.test_name = test_name;                       \
 		config.cache_line_count = cache_line_count;         \
-		config.profile_samples = profile_samples;           \
+		config.profile_iterations = profile_iterations;           \
 		config.max_exec_cycles = max_exec_cycles;           \
 		config.victim_runs = victim_runs;                   \
 		config.threads_barrier = &attacker_threads_barrier; \
@@ -63,7 +63,7 @@ typedef struct PP_attacker_thread_config_t {
 
 uint32_t PS_profile_once(EVSet *evset,
                          int slot,
-                         uint64_t profile_samples,
+                         uint64_t profile_iterations,
                          uint64_t max_exec_cycles,
                          uint64_t **sample_tsc,
                          uint64_t **probe_time);
@@ -72,7 +72,7 @@ void PP_profile_once(EVSet *evset,
                      int slot,
                      const char *label,
                      int threshold,
-                     int profile_samples,
+                     int profile_iterations,
                      uint64_t max_exec_cycles,
                      uint64_t **sample_tsc,
                      uint64_t **probe_time);

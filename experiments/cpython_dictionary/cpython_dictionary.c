@@ -6,6 +6,7 @@
 #include "log.h"
 #include "prime_probe.h"
 #include "shared_memory.h"
+#include "math.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,9 +16,9 @@
 
 static const char *dump_dir = "cpython_dict_profiling";
 static const uint64_t max_exec_cycles = (uint64_t)2e6;
-enum { cache_line_count = 1, profile_samples = 1 << 16 };
-static uint64_t probe_time_arr[cache_line_count][profile_samples];
-static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
+enum { cache_line_count = 1, profile_iterations = 1 << 16 };
+static uint64_t probe_time_arr[cache_line_count][profile_iterations];
+static uint64_t sample_tsc_arr[cache_line_count][profile_iterations];
 static uint64_t *sample_tsc[cache_line_count];
 static uint64_t *probe_time[cache_line_count];
 static uint64_t *reload_time[cache_line_count];
@@ -37,6 +38,34 @@ static bool use_cos = true;
 static bool check(u32 ctr) {
 	return (ctr >= dict_iterations * factor) &&
 	       (ctr <= dict_iterations / factor);
+}
+
+static int qsort_lt(const void *a, const void *b) {
+	int64_t va = (*(int64_t *)a);
+	int64_t vb = (*(int64_t *)b);
+	if (va == vb) {
+		return 0;
+	} else {
+		return va < vb ? -1 : 1;
+	}
+}
+
+void check_distribution(uint64_t *probes, int length) {
+	if (length == 0) {
+		return;
+	}
+	uint64_t ts_diff[profile_iterations];
+	double mean = 0;
+	memset(ts_diff, 0, sizeof(ts_diff));
+	for (int i = 1; i < length; ++i) {
+		ts_diff[i - 1] = probes[i] - probes[i - 1];
+		mean += ts_diff[i - 1];
+	}
+	qsort(ts_diff, length - 1, sizeof(uint64_t), qsort_lt);
+	int mid = (length - 1) * 1.0 / 2;
+	mean /= length;
+	/* log_info("median: %ld mean: %lf", ts_diff[mid], mean); */
+	return;
 }
 
 static u32
@@ -67,7 +96,7 @@ cpython_PS_profile_once(EVSet *evset, int slot, uint64_t max_exec_cycles) {
 			prime_skx_sf_evset_ps_flush(
 			    evset, sf_chain, array_repeat, l2_repeat);
 		}
-	} while (tsc1 - tsc0 < max_exec_cycles && index < profile_samples);
+	} while (tsc1 - tsc0 < max_exec_cycles && index < profile_iterations);
 
 	tsc1 = mfence_rdtscp();
 
@@ -102,7 +131,7 @@ static void profile(uint64_t i, int j) {
 			                      sample_tsc,
 			                      probe_time,
 			                      cache_line_count,
-			                      profile_samples,
+			                      profile_iterations,
 			                      0);
 
 			pthread_barrier_wait(sync_ctx.barrier);
@@ -220,16 +249,6 @@ static int infer_unique(int j) {
 	return -1;
 }
 
-static int qsort_lt(const void *a, const void *b) {
-	int64_t va = (*(int64_t *)a);
-	int64_t vb = (*(int64_t *)b);
-	if (va == vb) {
-		return 0;
-	} else {
-		return va < vb ? -1 : 1;
-	}
-}
-
 static double cos_target_thres = 1;
 
 static inline int calibrate_cos_sim() {
@@ -307,24 +326,6 @@ static int infer(int j) {
 	} else {
 		return infer_unique(j);
 	}
-}
-
-void check_distribution(uint64_t *probes, int length) {
-	if (length == 0) {
-		return;
-	}
-	uint64_t ts_diff[profile_samples];
-	double mean = 0;
-	memset(ts_diff, 0, sizeof(ts_diff));
-	for (int i = 1; i < length; ++i) {
-		ts_diff[i - 1] = probes[i] - probes[i - 1];
-		mean += ts_diff[i - 1];
-	}
-	qsort(ts_diff, length - 1, sizeof(uint64_t), qsort_lt);
-	int mid = (length - 1) * 1.0 / 2;
-	mean /= length;
-	/* log_info("median: %ld mean: %lf", ts_diff[mid], mean); */
-	return;
 }
 
 static bool check_eviction(EVSet *evset, void *target) {

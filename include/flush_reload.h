@@ -9,9 +9,9 @@
 #define FLUSH_CACHE_LINE(op, __cl_off) clflush(CACHE_LINE(op, __cl_off))
 
 #define RELOAD_CACHE_LINE(op, __cl_off, __slot) do {                \
-    sample_tsc[index][__slot] = rdtscp();                           \
+    sample_tsc[__slot][index] = rdtscp();                           \
     uint64_t access_time = timed_access(CACHE_LINE(op, __cl_off));  \
-    reload_time[index][__slot] = access_time;                       \
+    reload_time[__slot][index] = access_time;                       \
 } while(0)
 
 uint64_t FR_wait(uint64_t waiting_time);

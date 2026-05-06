@@ -6,6 +6,7 @@
 #include "Python.h"
 #include "shared_memory.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #define PATH_LEN (256)
@@ -101,12 +102,13 @@ void cpython_eval_loop(char *file, uint32_t iterations) {
 	pthread_barrier_wait(sync_ctx.barrier);
 
 	uint64_t *data = calloc(PAGE_SIZE, sizeof(uint64_t));
-	int cnt = 0;
+	int iteration = 0;
 
 	do {
 		python_opcode_log_ctr = 0;
 		sync_ctx_action_t action = sync_ctx_get_action();
 		uint64_t tsc = rdtscp();
+		log_info("Runtime start %lu", rdtscp());
 
 		if (action == SYNC_CTX_START) {
 			assert(test != NULL);
@@ -138,9 +140,12 @@ void cpython_eval_loop(char *file, uint32_t iterations) {
 		}
 
 		sync_ctx_set_action(SYNC_CTX_PAUSE);
+		log_info("Runtime end %lu", rdtscp());
 		pthread_barrier_wait(sync_ctx.barrier);
 
-		cpython_save_gt("gt.out");
+		char filename[256];
+		snprintf(filename, 256, "gt_%d.out", iteration++);
+		cpython_save_gt(filename);
 
 		pthread_barrier_wait(sync_ctx.barrier);
 	} while (sync_ctx_get_action() != SYNC_CTX_EXIT);

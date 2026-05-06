@@ -7,7 +7,7 @@
 
 uint32_t PS_profile_once(EVSet *evset,
                          int slot,
-                         uint64_t profile_samples,
+                         uint64_t profile_iterations,
                          uint64_t max_exec_cycles,
                          uint64_t **sample_tsc,
                          uint64_t **probe_time) {
@@ -16,14 +16,19 @@ uint32_t PS_profile_once(EVSet *evset,
 	evchain *sf_chain = evchain_build(evset->addrs, SF_ASSOC);
 
 	u64 scope_lat, end;
-	u32 aux, index = 0;
+	u32 aux, last_aux, index = 0;
 	u32 l2_repeat = 1, array_repeat = 12;
 	i64 threshold = detected_cache_lats.l2_thresh;
 
 	prime_skx_sf_evset_ps_flush(evset, sf_chain, array_repeat, l2_repeat);
 
-	tsc0 = tsc1 = rdtscp();
+	tsc0 = tsc1 = _rdtscp_aux(&last_aux);
 
+	log_info("Attacker %d start %lu cpu=%u node=%u",
+	         slot,
+	         tsc0,
+	         last_aux & 0xFFF,
+	         last_aux >> 12);
 	if (slot == 0) {
 		sync_ctx_set_action(SYNC_CTX_START);
 		pthread_barrier_wait(sync_ctx.barrier);
@@ -33,6 +38,18 @@ uint32_t PS_profile_once(EVSet *evset,
 		tsc1 = rdtscp();
 
 		scope_lat = _time_maccess_aux(scope, end, aux);
+
+		if (aux != last_aux) {
+			log_warn("Attacker %d CPU switch tsc=%lu "
+			         "cpu %u->%u node %u->%u",
+			         slot,
+			         tsc1,
+			         last_aux & 0xFFF,
+			         aux & 0xFFF,
+			         last_aux >> 12,
+			         aux >> 12);
+			last_aux = aux;
+		}
 
 		int scope_evict = scope_lat > threshold &&
 		                  scope_lat < detected_cache_lats.interrupt_thresh;
@@ -45,10 +62,11 @@ uint32_t PS_profile_once(EVSet *evset,
 			prime_skx_sf_evset_ps_flush(
 			    evset, sf_chain, array_repeat, l2_repeat);
 		}
-	} while (tsc1 - tsc0 < max_exec_cycles && index < profile_samples);
+	} while (tsc1 - tsc0 < max_exec_cycles && index < profile_iterations);
 
 	tsc1 = rdtscp();
 
+	log_info("Attacker %d end %lu", slot, rdtscp());
 	if (slot == 0) {
 		if (sync_ctx_get_action() != SYNC_CTX_PAUSE) {
 			log_warn("Profiling time/iteration not enough");
@@ -81,7 +99,7 @@ void *PS_attacker_thread(void *args) {
 	const char *test_name = pt_config->test_name;
 	const char *label = pt_config->label;
 	const int cache_line_count = pt_config->cache_line_count;
-	const int profile_samples = pt_config->profile_samples;
+	const int profile_iterations = pt_config->profile_iterations;
 	const int victim_runs = pt_config->victim_runs;
 	const uint64_t max_exec_cycles = pt_config->max_exec_cycles;
 
@@ -109,7 +127,7 @@ void *PS_attacker_thread(void *args) {
 
 		PS_profile_once(evset,
 		                slot,
-		                profile_samples,
+		                profile_iterations,
 		                max_exec_cycles,
 		                sample_tsc,
 		                probe_time);
@@ -120,7 +138,7 @@ void *PS_attacker_thread(void *args) {
 			                      sample_tsc,
 			                      probe_time,
 			                      cache_line_count,
-			                      profile_samples,
+			                      profile_iterations,
 			                      i == 0);
 		}
 	}
@@ -134,7 +152,7 @@ void PP_profile_once(EVSet *evset,
                      int slot,
                      const char *label,
                      int threshold,
-                     int profile_samples,
+                     int profile_iterations,
                      uint64_t max_exec_cycles,
                      uint64_t **sample_tsc,
                      uint64_t **probe_time) {
@@ -153,7 +171,7 @@ void PP_profile_once(EVSet *evset,
 
 	u64 tsc1, tsc0;
 	tsc1 = tsc0 = _rdtsc();
-	while (_rdtsc() - tsc0 < max_exec_cycles && index < profile_samples) {
+	while (_rdtsc() - tsc0 < max_exec_cycles && index < profile_iterations) {
 		u64 now_tsc = _rdtsc();
 
 		u64 lat = 0;
@@ -210,7 +228,7 @@ void *PP_attacker_thread(void *args) {
 	const char *test_name = pt_config->test_name;
 	const char *label = pt_config->label;
 	const int cache_line_count = pt_config->cache_line_count;
-	const int profile_samples = pt_config->profile_samples;
+	const int profile_iterations = pt_config->profile_iterations;
 	const int victim_runs = pt_config->victim_runs;
 	const int threshold = pt_config->threshold;
 	const uint64_t max_exec_cycles = pt_config->max_exec_cycles;
@@ -230,7 +248,7 @@ void *PP_attacker_thread(void *args) {
 		                slot,
 		                label,
 		                threshold,
-		                profile_samples,
+		                profile_iterations,
 		                max_exec_cycles,
 		                sample_tsc,
 		                probe_time);
@@ -247,7 +265,7 @@ void *PP_attacker_thread(void *args) {
 			                      sample_tsc_ap,
 			                      probe_time_ap,
 			                      cache_line_count,
-			                      profile_samples,
+			                      profile_iterations,
 			                      i == 0);
 		}
 	}

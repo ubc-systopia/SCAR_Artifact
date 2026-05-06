@@ -72,6 +72,14 @@ inline __attribute__((always_inline)) uint64_t rdtscp() {
 	return ((high << 32) | low);
 }
 
+inline __attribute__((always_inline)) uint64_t rdtscp_aux(uint32_t* aux) {
+	uint64_t low, high;
+	uint32_t ecx;
+	asm volatile("rdtscp" : "=a"(low), "=d"(high), "=c"(ecx) : : "rbx");
+	*aux = ecx;
+	return ((high << 32) | low);
+}
+
 inline __attribute__((always_inline)) void mfence() {
 	asm volatile("mfence" ::: "memory");
 }
