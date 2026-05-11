@@ -24,14 +24,11 @@ uint32_t PS_profile_once(EVSet *evset,
 
 	tsc0 = tsc1 = _rdtscp_aux(&last_aux);
 
-	log_info("Attacker %d start %lu cpu=%u node=%u",
-	         slot,
-	         tsc0,
-	         last_aux & 0xFFF,
-	         last_aux >> 12);
 	if (slot == 0) {
+		log_debug("Attacker start barrier %lu", rdtscp());
 		sync_ctx_set_action(SYNC_CTX_START);
 		pthread_barrier_wait(sync_ctx.barrier);
+		log_debug("Attacker start done %lu", rdtscp());
 	}
 
 	do {
@@ -66,25 +63,28 @@ uint32_t PS_profile_once(EVSet *evset,
 
 	tsc1 = rdtscp();
 
-	log_info("Attacker %d end %lu", slot, rdtscp());
 	if (slot == 0) {
+		log_debug("Attacker end barrier %lu", rdtscp());
 		if (sync_ctx_get_action() != SYNC_CTX_PAUSE) {
 			log_warn("Profiling time/iteration not enough");
 		}
 		pthread_barrier_wait(sync_ctx.barrier);
+		log_debug("Attacker end done %lu", rdtscp());
 	}
 
 	log_debug("Profiling rdtsc:\n"
-	          "pid:\t%d\n"
-	          "start:\t%ld\n"
-	          "end:\t%ld\n"
-	          "diff:\t%ld\n"
-	          "index cnt:\t%ld",
-	          getpid(),
-	          tsc0,
-	          tsc1,
-	          tsc1 - tsc0,
-	          index);
+	         "pid:\t%d\n"
+	         "slot:\t%d\n"
+	         "start:\t%ld\n"
+	         "end:\t%ld\n"
+	         "diff:\t%ld\n"
+	         "index cnt:\t%ld",
+	         getpid(),
+	         slot,
+	         tsc0,
+	         tsc1,
+	         tsc1 - tsc0,
+	         index);
 
 	return index;
 }
@@ -112,7 +112,7 @@ void *PS_attacker_thread(void *args) {
 	i64 threshold = detected_cache_lats.l2_thresh;
 
 	if (pt_config->pin_cpu != -1) {
-        pin_cpu(pt_config->pin_cpu);
+		pin_cpu(pt_config->pin_cpu);
 		/* iso_pin_cpu(pt_config->pin_cpu); */
 	}
 
@@ -201,7 +201,7 @@ void PP_profile_once(EVSet *evset,
 		pthread_barrier_wait(sync_ctx.barrier);
 	}
 
-	log_info("Prime+Probe %d (%s) rdtsc:\n"
+	log_debug("Prime+Probe %d (%s) rdtsc:\n"
 	         "pid:\t%d\n"
 	         "start:\t%ld\n"
 	         "end:\t%ld\n"
@@ -302,7 +302,8 @@ void dump_profiling_trace(const char *dump_prefix,
 				has_hits = true;
 			}
 			fprintf(fp, "%lu:%lu\t", sample_tsc[j][i], reload_time[j][i]);
-			sample_tsc[j][i] = reload_time[j][i] = 0;
+			// NOTE: dump do not memset buffer now
+			/* sample_tsc[j][i] = reload_time[j][i] = 0; */
 		}
 		fprintf(fp, "\n");
 		if (!has_hits) {
@@ -342,7 +343,7 @@ void dump_profiling_traces(const char *dump_prefix,
 		log_error("Error opening output file %s", output_file);
 		return;
 	}
-	log_trace("Dump trace to %s", output_file);
+	log_info("Dump trace to %s", output_file);
 
 	for (int i = 0; i < sp_cnt; ++i) {
 		bool has_hits = false;
@@ -351,7 +352,7 @@ void dump_profiling_traces(const char *dump_prefix,
 				has_hits = true;
 			}
 			fprintf(fp, "%lu:%lu\t", sample_tsc[j][i], reload_time[j][i]);
-			sample_tsc[j][i] = reload_time[j][i] = 0;
+			/* sample_tsc[j][i] = reload_time[j][i] = 0; */
 		}
 		fprintf(fp, "\n");
 		if (!has_hits) {

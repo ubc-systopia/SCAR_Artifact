@@ -12,8 +12,21 @@ typedef enum sync_ctx_action_t {
     SYNC_CTX_START,
     SYNC_CTX_PROBE,
     SYNC_CTX_PAUSE,
+    SYNC_CTX_SET_KEY,
     SYNC_CTX_EXIT,
 } sync_ctx_action_t;
+
+static inline const char *sync_ctx_action_name(sync_ctx_action_t action) {
+    switch (action) {
+        case SYNC_CTX_UNDEFINED: return "UNDEFINED";
+        case SYNC_CTX_START:     return "START";
+        case SYNC_CTX_PROBE:     return "PROBE";
+        case SYNC_CTX_PAUSE:     return "PAUSE";
+        case SYNC_CTX_SET_KEY:   return "SET_KEY";
+        case SYNC_CTX_EXIT:      return "EXIT";
+        default:                 return "UNKNOWN";
+    }
+}
 
 typedef struct sync_ctx_t {
     pthread_barrier_t* barrier;

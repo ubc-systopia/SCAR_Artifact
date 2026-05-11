@@ -2,16 +2,25 @@
 
 #include "arch.h"
 #include "config.h"
+#include "fs.h"
 #include "log.h"
 #include "Python.h"
 #include "shared_memory.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define PATH_LEN (256)
 
 sync_ctx_t sync_ctx;
+
+static char s_initial_key_path[PATH_LEN] = "";
+
+void cpython_pow_set_key(const char *path) {
+	strncpy(s_initial_key_path, path, PATH_LEN - 1);
+	s_initial_key_path[PATH_LEN - 1] = '\0';
+}
 
 void cpython_init(char *file) {
 	PyConfig config;
@@ -33,6 +42,12 @@ void cpython_init(char *file) {
 		          status.func,
 		          status.err_msg);
 		Py_ExitStatusException(status);
+	}
+
+	if (s_initial_key_path[0] != '\0') {
+		char cmd[PATH_LEN + 16];
+		snprintf(cmd, sizeof(cmd), "key_path = '%s'", s_initial_key_path);
+		PyRun_SimpleString(cmd);
 	}
 
 	FILE *fp = fopen(file, "r");
@@ -92,23 +107,37 @@ void cpython_eval_loop(char *file, uint32_t iterations) {
 	PyObject *probe = PyObject_GetAttrString(module, "probe");
 	if (!probe)
 		PyErr_Clear();
+	PyObject *set_key = PyObject_GetAttrString(module, "set_key");
+	if (!set_key)
+		PyErr_Clear();
 
 	// Signal init done
-	log_info("Signal init done");
+	log_info("Sync context init barrier %lu", rdtscp());
 	pthread_barrier_wait(sync_ctx.barrier);
+	log_info("Sync context init done %lu", rdtscp());
 
 	// Wait for attacker process
-	log_info("Wait for attacker initialization");
+	log_info("Runtime wait attacker initialization barrier %lu", rdtscp());
 	pthread_barrier_wait(sync_ctx.barrier);
+	log_info("Runtime wait Attacker initialization done %lu", rdtscp());
 
 	uint64_t *data = calloc(PAGE_SIZE, sizeof(uint64_t));
 	int iteration = 0;
+	create_directory("output/cpython_gt");
 
 	do {
-		python_opcode_log_ctr = 0;
+		log_info("Runtime start barrier %lu", rdtscp());
+		pthread_barrier_wait(sync_ctx.barrier);
+		log_info("Runtime start done %lu", rdtscp());
+
 		sync_ctx_action_t action = sync_ctx_get_action();
+		if (action == SYNC_CTX_EXIT) {
+			break;
+		}
+
+		python_opcode_log_ctr = 0;
 		uint64_t tsc = rdtscp();
-		log_info("Runtime start %lu", rdtscp());
+		/* log_info("Runtime start %lu", rdtscp()); */
 
 		if (action == SYNC_CTX_START) {
 			assert(test != NULL);
@@ -123,7 +152,7 @@ void cpython_eval_loop(char *file, uint32_t iterations) {
 				while (rdtscp() - tsc < extra_waiting_time) {
 				}
 			}
-		} else {
+		} else if (action == SYNC_CTX_PROBE) {
 			assert(probe != NULL);
 			PyObject *arg = PyLong_FromUnsignedLong(*sync_ctx.data);
 			for (int i = 0; i < iterations; i++) {
@@ -137,19 +166,33 @@ void cpython_eval_loop(char *file, uint32_t iterations) {
 				while (rdtscp() - tsc < extra_waiting_time) {
 				}
 			}
+		} else if (action == SYNC_CTX_SET_KEY) {
+			char *key_path = (char *)sync_ctx.data;
+			log_info("Reloading key: %s", key_path);
+			assert(set_key != NULL);
+			PyObject *arg = PyUnicode_FromString(key_path);
+			PyObject *ret = PyObject_CallOneArg(set_key, arg);
+			Py_XDECREF(ret);
+			Py_DECREF(arg);
+		} else {
+			// FIXME
+			log_error("Unexpected action %s (%d)",
+			          sync_ctx_action_name(action),
+			          action);
 		}
 
 		sync_ctx_set_action(SYNC_CTX_PAUSE);
-		log_info("Runtime end %lu", rdtscp());
+		log_info("Runtime end barrier %lu", rdtscp());
 		pthread_barrier_wait(sync_ctx.barrier);
+		log_info("Runtime end done %lu", rdtscp());
 
 		char filename[256];
-		snprintf(filename, 256, "gt_%d.out", iteration++);
+		snprintf(filename, 256, "output/cpython_gt/gt_%d.out", iteration++);
 		cpython_save_gt(filename);
 
-		pthread_barrier_wait(sync_ctx.barrier);
-	} while (sync_ctx_get_action() != SYNC_CTX_EXIT);
+	} while (1);
 
+	Py_XDECREF(set_key);
 	Py_XDECREF(probe);
 	Py_XDECREF(test);
 	Py_DECREF(module);
