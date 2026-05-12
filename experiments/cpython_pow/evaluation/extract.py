@@ -1,5 +1,6 @@
 import argparse
 import glob
+import os
 from collections import Counter
 import pandas as pd
 import numpy as np
@@ -13,6 +14,7 @@ GAP = -1
 
 attack_type = "FR"
 acc_threshold = 0.75
+key_path = None
 COMSUME_ZEROS_DUP_INTERVAL = 40000
 
 
@@ -277,8 +279,8 @@ def get_next_state(current_state, trigger, ratio=0.2):
     return None, None
 
 
-def resolve_bits(current_state, next_state):
-    print(current_state, next_state)
+def resolve_bits(current_state, next_state, diff):
+    print(current_state, next_state, diff)
     bits_table = {
         (("", 0), ("CZ", 1)): "",
         (("", 0), ("AW", 1)): "",
@@ -304,7 +306,7 @@ def resolve_bits(current_state, next_state):
     return bits_table.get((current_state, next_state))
 
 
-def infer_PS(seg):
+def infer_PS(seg, pre_counts=None):
     inf = ""
 
     tsc = seg["tsc"].values
@@ -369,7 +371,7 @@ def infer_PS(seg):
     state = ("", 0)
     # FIXME: hardcoded window size
     window_size = 600000
-    count = {"CZ": 0, "AW": 0, "AT": 0}
+    count = dict(pre_counts) if pre_counts else {"CZ": 0, "AW": 0, "AT": 0}
 
     for i in range(pos):
         count[src[i]] += 1
@@ -379,8 +381,8 @@ def infer_PS(seg):
     # nw_idx: next chosen hit index
 
     while pos < len(seg):
-        print("group:")
-        print(tsc[pos], src[pos], "Index", count[src[pos]] + 1)
+        print("New Group starting from:")
+        print(tsc[pos], src[pos], "Index", count[src[pos]])
 
         lw_idx = pos - 1
         n_pos = pos
@@ -396,26 +398,26 @@ def infer_PS(seg):
         # NOTE(heuristics): CZ AW Speculation
         ns_states = {s for s, _, _ in ns_list}
 
-        if ns_states == {('CZ', 1), ('AW', 1)}:
-            ns_list = [(s, i, d) for s, i, d in ns_list if s == ('AW', 1)]
-        elif ns_states == {('AW', 3), ('AT', 3)}:
-            ns_list = [(s, i, d) for s, i, d in ns_list if s == ('AW', 3)]
+        if ns_states == {("CZ", 1), ("AW", 1)}:
+            ns_list = [(s, i, d) for s, i, d in ns_list if s == ("AW", 1)]
+        elif ns_states == {("AW", 3), ("AT", 3)}:
+            ns_list = [(s, i, d) for s, i, d in ns_list if s == ("AW", 3)]
 
         ns_states = {s for s, _, _ in ns_list}
         if len(ns_states) > 0:
             n_state, nw_idx, diff = min(ns_list, key=lambda x: x[2])
 
-            bits = resolve_bits(state, n_state)
+            bits = resolve_bits(state, n_state, tsc[nw_idx] - tsc[lw_idx])
             state = n_state
             for i in range(pos, nw_idx + 1):
-                count[src[pos]] += 1
+                count[src[i]] += 1
             pos = nw_idx + 1
             if bits == None:
                 print("???")
             inf += bits
             if not check_inf_match(inf):
                 print("Mismatch")
-            print(inf, len(inf))
+            print("Infer Length " + str(len(inf)), inf, "\n", sep="\n")
         elif len(ns_states) == 0:
             print("Ignore Mismatch Pattern")
             # count[src[pos]] += 1
@@ -424,7 +426,6 @@ def infer_PS(seg):
         else:
             print("?", ns_states)
             return
-
 
     return inf
 
@@ -533,7 +534,7 @@ def merge_inferences(inf_list, target_len):
 
 
 def extract_FR(folder):
-    with open(f"{folder}/private.key") as f:
+    with open(key_path or f"{folder}/private.key") as f:
         keys = f.read().strip()
         d = list(map(int, keys[2:]))
 
@@ -593,11 +594,19 @@ def parse_trace_segment(cache_hits, k=4):
     core_seg = cache_hits[
         (cache_hits["tsc"] >= low) & (cache_hits["tsc"] <= high)
     ].reset_index(drop=True)
-    return core_seg
+    pre = cache_hits[cache_hits["tsc"] < low]["src"].value_counts().to_dict()
+    pre_counts = {k: pre.get(k, 0) for k in ("CZ", "AW", "AT")}
+    return core_seg, pre_counts
+
+
+def process_PS_file(filepath):
+    hits = parse_trace_PS(filepath)
+    core_segment, pre_counts = parse_trace_segment(hits)
+    return infer_PS(core_segment, pre_counts)
 
 
 def extract_PS(folder):
-    with open(f"{folder}/private.key") as f:
+    with open(key_path or f"{folder}/private.key") as f:
         keys = f.read().strip()
         d = list(map(int, keys[2:]))
         global gt
@@ -613,9 +622,7 @@ def extract_PS(folder):
     next_metric_at = 1
 
     for file_idx, filepath in enumerate(files, 1):
-        hits = parse_trace_PS(filepath)
-        core_segment = parse_trace_segment(hits)
-        inf = infer_PS(core_segment)
+        inf = process_PS_file(filepath)
 
         if inf:
             all_infs.append(inf)
@@ -638,10 +645,19 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-d",
-        "--directory",
+        "-f",
+        dest="path",
         type=str,
         required=True,
-        help="Folder containing private.key and *.out traces",
+        help="Folder containing private.key and *.out traces, or a single *.out file",
+    )
+
+    parser.add_argument(
+        "-k",
+        "--key",
+        type=str,
+        default=None,
+        help="Path to private.key file (default: <folder>/private.key)",
     )
 
     parser.add_argument(
@@ -662,14 +678,27 @@ if __name__ == "__main__":
 
     attack_type = args.at
     acc_threshold = args.threshold
+    key_path = args.key
 
-    if attack_type == "FR":
-        with progress:
-            metrics = extract_FR(args.directory)
-        for m in metrics:
-            print(m)
-    elif attack_type == "PS":
-        with progress:
-            metrics = extract_PS(args.directory)
-        for m in metrics:
-            print(m)
+    if os.path.isfile(args.path):
+        folder = os.path.dirname(os.path.abspath(args.path))
+        kfile = key_path or os.path.join(folder, "private.key")
+        if os.path.exists(kfile):
+            with open(kfile) as f:
+                keys = f.read().strip()
+            gt = list(keys[2:])
+        if attack_type == "PS":
+            with progress:
+                inf = process_PS_file(args.path)
+            print(inf)
+    else:
+        if attack_type == "FR":
+            with progress:
+                metrics = extract_FR(args.path)
+            for m in metrics:
+                print(m)
+        elif attack_type == "PS":
+            with progress:
+                metrics = extract_PS(args.path)
+            for m in metrics:
+                print(m)
