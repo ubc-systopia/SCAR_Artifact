@@ -73,18 +73,18 @@ uint32_t PS_profile_once(EVSet *evset,
 	}
 
 	log_debug("Profiling rdtsc:\n"
-	         "pid:\t%d\n"
-	         "slot:\t%d\n"
-	         "start:\t%ld\n"
-	         "end:\t%ld\n"
-	         "diff:\t%ld\n"
-	         "index cnt:\t%ld",
-	         getpid(),
-	         slot,
-	         tsc0,
-	         tsc1,
-	         tsc1 - tsc0,
-	         index);
+	          "pid:\t%d\n"
+	          "slot:\t%d\n"
+	          "start:\t%ld\n"
+	          "end:\t%ld\n"
+	          "diff:\t%ld\n"
+	          "index cnt:\t%ld",
+	          getpid(),
+	          slot,
+	          tsc0,
+	          tsc1,
+	          tsc1 - tsc0,
+	          index);
 
 	return index;
 }
@@ -120,10 +120,10 @@ void *PS_attacker_thread(void *args) {
 
 	for (int i = 0; i < victim_runs; ++i) {
 		pthread_barrier_wait(threads_barrier);
-		if (slot == 0) {
-			memset(probe_time[slot], 0, sizeof(probe_time[0]));
-			memset(sample_tsc[slot], 0, sizeof(sample_tsc[0]));
-		}
+		memset(
+		    probe_time[slot], 0, profile_iterations * sizeof(probe_time[slot]));
+		memset(
+		    sample_tsc[slot], 0, profile_iterations * sizeof(sample_tsc[slot]));
 
 		PS_profile_once(evset,
 		                slot,
@@ -202,18 +202,18 @@ void PP_profile_once(EVSet *evset,
 	}
 
 	log_debug("Prime+Probe %d (%s) rdtsc:\n"
-	         "pid:\t%d\n"
-	         "start:\t%ld\n"
-	         "end:\t%ld\n"
-	         "diff:\t%ld\n"
-	         "index cnt:\t%ld",
-	         slot,
-	         label,
-	         getpid(),
-	         tsc0,
-	         tsc1,
-	         tsc1 - tsc0,
-	         index);
+	          "pid:\t%d\n"
+	          "start:\t%ld\n"
+	          "end:\t%ld\n"
+	          "diff:\t%ld\n"
+	          "index cnt:\t%ld",
+	          slot,
+	          label,
+	          getpid(),
+	          tsc0,
+	          tsc1,
+	          tsc1 - tsc0,
+	          index);
 
 	return;
 }
