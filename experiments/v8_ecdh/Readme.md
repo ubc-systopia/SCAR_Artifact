@@ -23,3 +23,9 @@ cd SCAR_Artifact/build
 cd SCAR_Artifact
 python experiments/v8_ecdh/evaluation/extract_ecdh.py --all_keys ./build/output
 ```
+
+### Key Pool Generation
+
+```bash
+python3 gen_key_pool.py
+```

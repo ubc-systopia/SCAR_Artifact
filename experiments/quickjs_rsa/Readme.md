@@ -28,3 +28,9 @@ cd SCAR_Artifact/build
 cd SCAR_Artifact
 python experiments/quickjs_rsa/evaluation/extract_openpgp_rsa.py -p build/output/ --at PS
 ```
+
+### Key Pool Generation
+
+```bash
+python3 gen_key_pool.py
+```

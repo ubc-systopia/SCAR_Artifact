@@ -18,3 +18,9 @@ To run the evaluation execute the following command:
 cd experiments/cpython_pow/evaluation
 python3 e2e.py
 ```
+
+### Key Pool Generation
+
+```bash
+python3 gen_key_pool.py
+```
