@@ -31,9 +31,12 @@ static uint64_t lat_buffer[CACHE_LINE_COUNT * PROFILE_ITERATIONS];
 static double cz_freq = 18.46, aw_freq = 18.18, at_freq = 18.18,
               aw_side_freq = 3.15, at_side_freq = 3.15;
 
-static const char *key_path_cz = "experiments/cpython_pow/private_10+.pem";
-static const char *key_path_aw = "experiments/cpython_pow/private_1+.pem";
-static const char *key_path_at = "experiments/cpython_pow/private_(10000)+.pem";
+static const char *key_path_cz =
+    "experiments/cpython_pow/rsa_key_pool/csi_cz.pem";
+static const char *key_path_aw =
+    "experiments/cpython_pow/rsa_key_pool/csi_aw.pem";
+static const char *key_path_at =
+    "experiments/cpython_pow/rsa_key_pool/csi_at.pem";
 
 static const char *key_pool_dir = "experiments/cpython_pow/rsa_key_pool";
 static int key_pool_size = 128;

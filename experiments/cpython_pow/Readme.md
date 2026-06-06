@@ -21,6 +21,15 @@ cd experiments/cpython_pow/evaluation
 python3 gen_key_pool.py
 ```
 
+Cache-set identification (CSI) additionally needs three calibration keys with
+patterned exponents (`csi_cz.pem`, `csi_aw.pem`, `csi_at.pem`). Generate them
+into the same pool directory with:
+
+```bash
+cd experiments/cpython_pow/evaluation
+./csi_key_gen.sh
+```
+
 ### Running the attack
 
 ```bash
