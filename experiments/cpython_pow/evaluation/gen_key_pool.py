@@ -29,7 +29,9 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "rsa_key_pool"),
+        default=os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rsa_key_pool"
+        ),
         help="Output directory for the key pool",
     )
     parser.add_argument(

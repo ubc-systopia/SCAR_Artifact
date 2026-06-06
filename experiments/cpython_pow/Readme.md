@@ -12,15 +12,18 @@ CPython's internal implementation [`long_pow`](https://github.com/anonymous-sc-l
 
 ## Evaluation
 
-To run the evaluation execute the following command:
+### Key Pool Generation
+
+The evaluation attacks a pool of RSA private keys. Generate it first:
+
+```bash
+cd experiments/cpython_pow/evaluation
+python3 gen_key_pool.py
+```
+
+### Running the attack
 
 ```bash
 cd experiments/cpython_pow/evaluation
 python3 e2e.py
-```
-
-### Key Pool Generation
-
-```bash
-python3 gen_key_pool.py
 ```

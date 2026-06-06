@@ -1,145 +1,232 @@
 #!/usr/bin/env python3
+"""Drive a single-CSI key-pool attack and analyze each key folder.
 
+The attack runs the runtime + attacker:
+    ./src/runtime/cpython/cpython_rt ../experiments/cpython_pow/python/cpython_pow.py 1
+    ./experiments/cpython_pow/cpython_pow -PS -csi -key_pool -num_keys <N> <reps>
+"""
+
+import argparse
+import glob
 import os
-import pathlib
+import re
+import shutil
+import statistics
 import subprocess
-import sys
 import time
-from argparse import ArgumentParser
-from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from extract import extract_FR
-from metrics import aggregate_metrics
-
-
-class ResultsLogger(object):
-    def __init__(self, out):
-        self.terminal = out
-        self.log = open("results.log", "a")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-
-    def flush(self):
-        # this flush method is needed for python 3 compatibility.
-        # this handles the flush command by doing nothing.
-        # you might want to specify some extra behavior here.
-        pass
-
-
-args_parser = ArgumentParser(
-    prog="cpython_builtin_pow_lib_rsa_cross_e2e",
-    description="Evaluate the attack performance of the e2e attack on python-rsa",
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
-args_parser.add_argument("--output", type=str, required=False, help="Output file path")
-args_parser.add_argument(
-    "--iterations", type=int, required=False, help="Number of iterations", default=100
-)
-args_parser.add_argument(
-    "--repetitions", type=int, required=False, help="Number of repetitions", default=64
-)
-args_parser.add_argument(
-    "--traces-only",
-    action="store_true",
-    required=False,
-    help="Only collect the traces",
-    default=False,
-)
-args_parser.add_argument(
-    "--analyze-only",
-    action="store_true",
-    required=False,
-    help="Only analyze the traces",
-    default=False,
-)
-args = args_parser.parse_args()
 
-print(args)
+import extract
 
-project_dir = pathlib.Path.cwd()
-root_dir = pathlib.Path(project_dir.root)
-while project_dir != root_dir:
-    if (project_dir / ".project").exists():
-        break
-    project_dir = project_dir.parent
+HERE = os.path.dirname(os.path.abspath(__file__))
 
-if project_dir == root_dir:
-    print("No project directory found")
-    exit(1)
 
-print("Found project directory:", project_dir)
+def find_project_root(start):
+    d = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(d, ".project")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            raise SystemExit("Could not locate .project marker above " + start)
+        d = parent
 
-if args.output:
-    results_folder = args.output
-else:
-    timestamp = datetime.now().isoformat()
-    results_folder = project_dir / "experiments/cpython_pow/results" / timestamp
 
-print(f"Results will be saved in {results_folder}")
-os.makedirs(results_folder, exist_ok=True)
-os.chdir(results_folder)
+def key_index(path):
+    m = re.search(r"_key(\d+)_r", os.path.basename(path))
+    return int(m.group(1)) if m else 1 << 30
 
-if not args.analyze_only:
-    print("Generating traces")
-    for i in range(args.iterations):
-        os.makedirs(str(i), exist_ok=True)
-        os.chdir(str(i))
 
-        print(f"Generating private key {i + 1}/{args.iterations}")
-        subprocess.run(
-            ["openssl", "genrsa", "-out", "private.pem", "-traditional", "4096"],
-            stdout=subprocess.DEVNULL,
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "--keys",
+        type=int,
+        default=128,
+        help="pool size / number of keys (default: 128)",
+    )
+    ap.add_argument(
+        "--reps",
+        type=int,
+        default=16,
+        help="profiling repetitions per key (default: 16)",
+    )
+    ap.add_argument(
+        "--no-csi", action="store_true", help="skip CSI (use static evset build)"
+    )
+    ap.add_argument(
+        "--analyze-only",
+        action="store_true",
+        help="skip the attack; just run extract.py over existing key folders",
+    )
+    ap.add_argument(
+        "--out-dir",
+        default=None,
+        help="directory holding key folders / logs "
+        "(default: <build>/output/cpython_pow_key_pool)",
+    )
+    args = ap.parse_args()
+
+    root = find_project_root(HERE)
+    build_dir = os.path.join(root, "build")
+    runtime = os.path.join(build_dir, "src/runtime/cpython/cpython_rt")
+    victim = os.path.join(root, "experiments/cpython_pow/python/cpython_pow.py")
+    attacker = os.path.join(build_dir, "experiments/cpython_pow/cpython_pow")
+    key_pool_dir = os.path.join(root, "experiments/cpython_pow/rsa_key_pool")
+
+    out_dir = (
+        os.path.abspath(args.out_dir)
+        if args.out_dir
+        else os.path.join(build_dir, "output/cpython_pow_key_pool")
+    )
+    os.makedirs(out_dir, exist_ok=True)
+
+    if not args.analyze_only:
+        shutil.copyfile(
+            os.path.join(key_pool_dir, "rsa_key_0.pem"),
+            os.path.join(build_dir, "private.pem"),
         )
 
-        print(f"Generating traces {i + 1}/{args.iterations}")
-        runtime = subprocess.Popen(
-            [
-                project_dir / "build/src/runtime/cpython/cpython_rt",
-                project_dir / "experiments/cpython_pow/python/cpython_pow.py",
-                "1",
-            ],
-            stdout=subprocess.DEVNULL,
+        at_cmd = [attacker, "-PS"]
+        if not args.no_csi:
+            at_cmd.append("-csi")
+        at_cmd += ["-key_pool", "-num_keys", str(args.keys), str(args.reps)]
+
+        print(f"[run] cwd={build_dir}")
+        print(f"[run] runtime: {runtime} {victim} 1")
+        print(f"[run] attacker: {' '.join(at_cmd)}")
+
+        with open(os.path.join(out_dir, "runtime.log"), "w") as rt_log:
+            rt = subprocess.Popen(
+                [runtime, victim, "1"], cwd=build_dir, stdout=rt_log, stderr=rt_log
+            )
+            time.sleep(0.3)
+            with open(os.path.join(out_dir, "attacker.log"), "w") as at_log:
+                at = subprocess.Popen(
+                    at_cmd, cwd=build_dir, stdout=at_log, stderr=at_log
+                )
+                at_rc = at.wait()
+            rt.wait()
+        print(f"[run] attacker rc={at_rc}")
+        if at_rc != 0:
+            print(f"[run] attacker failed; see {out_dir}/attacker.log")
+            return at_rc
+
+    folders = sorted(
+        (
+            f
+            for f in glob.glob(os.path.join(out_dir, "cpython_pow_key*_r*"))
+            if os.path.isdir(f)
+        ),
+        key=key_index,
+    )
+    if not folders:
+        print(f"[analyze] no key folders under {out_dir}")
+        return 1
+
+    print(f"[analyze] {len(folders)} key folders")
+
+    # Build per-key work: derive ground truth from the pooled .pem and list its
+    # traces. Skipped keys (missing .pem / no traces) are reported but don't
+    # block the rest.
+    extract.attack_type = "PS"
+    specs = []  # (folder, idx, files, d, gt_str)
+    failures = 0
+    for folder in folders:
+        idx = key_index(folder)
+        pem = os.path.join(key_pool_dir, f"rsa_key_{idx}.pem")
+        if not os.path.exists(pem):
+            print(f"  skip key {idx}: pooled key not found: {pem}")
+            failures += 1
+            continue
+        keyfile = os.path.join(folder, "private.key")
+        extract.write_key_from_pem(pem, keyfile)
+        with open(keyfile) as f:
+            bits = f.read().strip()[2:]
+        files = extract.ps_trace_files(folder)
+        if not files:
+            print(f"  skip key {idx}: no traces under {folder}")
+            failures += 1
+            continue
+        specs.append((folder, idx, files, list(map(int, bits)), bits))
+
+    if not specs:
+        print("[analyze] nothing to analyze")
+        return 1
+
+    # A single overall bar tracks key completion (no per-key / per-trace bars in
+    # key-pool mode). All traces of all keys go through one process pool (all
+    # CPUs); the moment a key's last trace is parsed we print that key's stats
+    # and advance the bar — results stream out per key, in completion order.
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+    )
+
+    meta = {folder: (idx, files, d, gt_str) for folder, idx, files, d, gt_str in specs}
+    pending = {folder: len(files) for folder, _, files, _, _ in specs}
+    collected = {folder: {} for folder, *_ in specs}
+    merged_accs = []  # MERGED Accuracy% per key, for the final summary
+
+    with progress:
+        task = progress.add_task("[bold green]keys", total=len(specs))
+
+        with ProcessPoolExecutor() as ex:
+            fut_folder = {}
+            for folder, idx, files, d, gt_str in specs:
+                for fp in files:
+                    fut = ex.submit(extract.process_PS_file_silent, fp, len(gt_str))
+                    fut_folder[fut] = folder
+
+            for fut in as_completed(fut_folder):
+                folder = fut_folder[fut]
+                fp, inf, err = fut.result()
+                collected[folder][fp] = (inf, err)
+
+                pending[folder] -= 1
+                if pending[folder] == 0:
+                    idx, files, d, gt_str = meta[folder]
+                    metrics, lines = extract.summarize_ps(
+                        folder, files, collected[folder], d, gt_str
+                    )
+                    progress.console.print(
+                        f"\n===== {os.path.basename(folder)} (key {idx}) ====="
+                    )
+                    for line in lines:
+                        progress.console.print(line)
+                    if metrics:
+                        merged_accs.append(metrics[-1]["Accuracy%"])
+                    progress.update(task, advance=1)
+
+    if merged_accs:
+        print(
+            f"\n[summary] merged accuracy over {len(merged_accs)} keys: "
+            f"min={min(merged_accs):.2f}% "
+            f"median={statistics.median(merged_accs):.2f}% "
+            f"max={max(merged_accs):.2f}%"
         )
-        time.sleep(0.1)
-        attacker = subprocess.Popen(
-            [
-                project_dir / "build/experiments/cpython_pow/cpython_pow",
-                str(args.repetitions),
-            ],
-            stdout=subprocess.DEVNULL,
-        )
+    else:
+        print("\n[summary] no merged key results to summarize")
 
-        attacker.wait()
-        runtime.wait()
-
-        os.chdir("..")
+    return 1 if failures else 0
 
 
-print("Analyzing traces")
-
-stdout = sys.stdout
-rout = ResultsLogger(stdout)
-
-if not args.traces_only:
-    res = []
-    for i in range(args.iterations):
-        print(f"Analyzing trace {i + 1}/{args.iterations}")
-        os.chdir(str(i))
-        # TODO: extract and analyze separately
-        r = extract_FR(".")
-        for j, item in enumerate(r):
-            if j < len(res):
-                res[j].append(item)
-            else:
-                res.append([item])
-        # print(res)
-        os.chdir("..")
-
-    print("Aggregating metrics")
-    sys.stdout = rout
-    for m in res:
-        aggregate_metrics(m)
-    sys.stdout = stdout
-
-print("Done")
+if __name__ == "__main__":
+    raise SystemExit(main())

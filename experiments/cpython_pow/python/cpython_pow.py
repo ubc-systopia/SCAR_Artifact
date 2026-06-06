@@ -7,8 +7,6 @@ def set_key(path):
     with open(path) as kf:
         kd = kf.read()
     key = rsa.PrivateKey.load_pkcs1(kd)
-    with open("private.key", "w+") as kf:
-        kf.write(bin(key.d) + "\n")
 
 
 set_key(globals().get("key_path", "private.pem"))
