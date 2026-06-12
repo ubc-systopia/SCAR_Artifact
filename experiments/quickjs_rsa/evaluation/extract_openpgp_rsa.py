@@ -31,6 +31,9 @@ interval_min = 1
 sample_interval = 1
 fs = 1
 
+bit_infer_thres = (0.85, 0.98)
+wrong_infer_weight = 500.0
+
 
 class RSA_KEY:
 
@@ -71,28 +74,42 @@ class RSA_KEY:
             acc.append(t / (t + f))
         return acc
 
-    def check_accuracy(self, thres=(0.90, 0.90)):
+    def _ppr_truth(self, count):
+        ppr = np.array(
+            [self.bit_counter[i]["1"] / count for i in range(self.secret_key_bits)]
+        )
+        truth = np.frombuffer(self.secret_key_bin.encode(), np.uint8) - ord("0")
+        return ppr, truth
+
+    def check_accuracy(self, thres=(0.85, 0.98)):
         self.merge_inference()
-        t, f = 0, 0
         count = self.bit_counter[0]["1"] + self.bit_counter[0]["0"]
         if count == 0:
             return None
+        low, high = thres
+
+        known, correct, unknown = 0, 0, 0
         for i in range(self.secret_key_bits):
             ppr = self.bit_counter[i]["1"] / count
-            if ppr >= thres[1]:
-                if self.secret_key_bin[i] == "1":
-                    t += 1
-                else:
-                    f += 1
-            elif ppr <= thres[0]:
-                if self.secret_key_bin[i] == "0":
-                    t += 1
-                else:
-                    f += 1
+            if ppr >= high:
+                pred = "1"
+            elif ppr <= low:
+                pred = "0"
             else:
-                f += 1
+                unknown += 1
+                continue
+            known += 1
+            if pred == self.secret_key_bin[i]:
+                correct += 1
 
-        return t / (t + f)
+        return {
+            "known_acc": correct / known if known else None,
+            "known": known,
+            "unknown": unknown,
+            "wrong": known - correct,
+            "obs": count,
+            "band": (round(low, 3), round(high, 3)),
+        }
 
     def single_run_inference(self, data_samples, expected_sar_interval, ts0=0):
         tsc_start = np.min(data_samples["tsc"])
@@ -126,6 +143,10 @@ class RSA_KEY:
         goto8_samples = data_samples[
             data_samples.apply(lambda s: s["bytecode"] == "goto8", axis=1)
         ]
+
+        # Degenerate trace (e.g. a dead sar/goto8 channel): no signal to segment.
+        if len(goto8_samples) == 0 or len(sar_samples) == 0:
+            return ""
 
         data_samples = data_samples.sort_values(["tsc"], ascending=[False]).reset_index(
             drop=True
@@ -305,19 +326,18 @@ class RSA_KEY:
         return
 
     def infer_directory(self, output_dir):
-        executor = ProcessPoolExecutor()
-        futures = []
         files = glob.glob(str(output_dir) + "/*.out")
         random.shuffle(files)
 
         task_file = progress.add_task("[green]Processing traces...", total=len(files))
-        for idx, fp in enumerate(files):
-            future = executor.submit(self.infer_file, fp)
-            futures.append(future)
-
-        for future in as_completed(futures, timeout=20):
-            progress.update(task_file, advance=1)
-            future.result(timeout=2)
+        with ProcessPoolExecutor() as executor:
+            futures = {executor.submit(self.infer_file, fp): fp for fp in files}
+            for future in as_completed(futures):
+                progress.update(task_file, advance=1)
+                try:
+                    future.result()
+                except Exception as exc:
+                    print(f"Failed to infer {futures[future]}: {exc}")
 
         progress.remove_task(task_file)
         return
@@ -568,16 +588,123 @@ def plot_acc_with_observations(infer_keys):
     return p
 
 
+def print_infer_stats(kid, b):
+    if b is None:
+        return f"Key {kid:03d} | no traces"
+    nbits = b["known"] + b["unknown"]
+    acc = " None  " if b["known_acc"] is None else f"{b['known_acc']:.5f}"
+    band = b.get("band")
+    band_s = f" | band [{band[0]:.2f},{band[1]:.2f}]" if band else ""
+    return (
+        f"Key {kid:03d} | acc {acc} | "
+        f"known {b['known']:>4} ({100 * b['known'] / nbits:5.2f}%) | "
+        f"unknown {b['unknown']:>3} ({100 * b['unknown'] / nbits:5.2f}%) | "
+        f"wrong {b['wrong']:>2} | {b['obs']:>3} traces{band_s}"
+    )
+
+
+def summarize_pool(reports):
+    reports = [b for b in reports if b is not None]
+    if not reports:
+        return "No keys resolved."
+    bits = np.array([b["known"] + b["unknown"] for b in reports])
+    unknown = np.array([b["unknown"] for b in reports])
+    known = np.array([b["known"] for b in reports])
+    wrong = np.array([b["wrong"] for b in reports])
+    unk_pct = 100.0 * unknown / bits
+    known_pct = 100.0 * known / bits
+
+    known_acc_pct = 100.0 * np.where(known > 0, (known - wrong) / known, 1.0)
+    overall_known_acc = 100.0 * (known.sum() - wrong.sum()) / max(known.sum(), 1)
+    keys_with_error = int((wrong > 0).sum())
+
+    def row(label, a):
+        return (
+            f"  {label:<17}{a.mean():>10.3f}{a.min():>10.3f}"
+            f"{a.max():>10.3f}{np.median(a):>10.3f}"
+        )
+
+    width = 17 + 4 * 10
+    lines = [
+        "",
+        f"===== Key-pool summary ({len(reports)} keys) ".ljust(width + 2, "="),
+        f"  keys with 0 errors : {len(reports) - keys_with_error} / {len(reports)}",
+        f"  total wrong bits   : {int(wrong.sum())} / {int(known.sum())} known",
+        f"  known-bit accuracy : {overall_known_acc:.5f}% (over all keys)",
+        f"  {'metric':<17}{'mean':>10}{'min':>10}{'max':>10}{'median':>10}",
+        row("known %", known_pct),
+        row("known-acc %", known_acc_pct),
+        row("unknown %", unk_pct),
+        row("unknown bits/key", unknown.astype(float)),
+    ]
+    band = reports[0].get("band")
+    if band and all(b.get("band") == band for b in reports):
+        lines.append(f"  band (applied to all keys): [{band[0]}, {band[1]}]")
+    lines.append("=" * (width + 2))
+    return "\n".join(lines)
+
+
+def pool_optimal_band(skeys, w=None):
+    """Find the SINGLE confidence band (low, high) that minimises the pool-wide
+    cost unknown + w * wrong, applied uniformly to every key. A real attack does
+    not know the key, so it cannot tune a band per key; this picks the one fixed
+    band that is best on average across the whole pool. w trades the two off:
+    large w keeps wrong ~0 (more bits unknown), small w accepts a rare systematic
+    false-positive to recover more bits."""
+    if w is None:
+        w = wrong_infer_weight
+    pprs, truths = [], []
+    for skey in skeys:
+        skey.merge_inference()
+        count = skey.bit_counter[0]["1"] + skey.bit_counter[0]["0"]
+        if count == 0:
+            continue
+        ppr, truth = skey._ppr_truth(count)
+        pprs.append(ppr)
+        truths.append(truth)
+    if not pprs:
+        return (0.85, 0.98)
+    ppr = np.concatenate(pprs)
+    truth = np.concatenate(truths)
+    lows = np.linspace(0.50, 0.97, 48)
+    highs = np.linspace(0.90, 1.00, 41)
+    best = None
+    for high in highs:
+        c1 = ppr >= high
+        fp = int((c1 & (truth == 0)).sum())
+        for low in lows:
+            if low >= high:
+                continue
+            c0 = ppr <= low
+            fn = int((c0 & (truth == 1)).sum())
+            unknown = int((~c1 & ~c0).sum())
+            cost = unknown + w * (fp + fn)
+            if best is None or cost < best[0]:
+                best = (cost, round(float(low), 4), round(float(high), 4))
+    return best[1], best[2]
+
+
+def resolve_band(skeys):
+    if bit_infer_thres is not None:
+        return bit_infer_thres
+    band = pool_optimal_band(skeys)
+    print(f"Adaptive: optimal band over {len(skeys)} key(s) = "
+          f"[{band[0]}, {band[1]}] (w={wrong_infer_weight})")
+    return band
+
+
 def infer_all_in_one(skey, output_file):
     skey.infer_file(output_file)
-    print(f"Key: {skey.kid:03d}, Acc: {skey.check_accuracy()}")
+    band = resolve_band([skey])
+    print(print_infer_stats(skey.kid, skey.check_accuracy(band)))
 
 
 def infer_directory(skey, output_dir):
     if not Path(output_dir).exists() or not Path(output_dir).is_dir():
         raise ValueError(f"Invalid directory path {output_dir}")
     skey.infer_directory(output_dir)
-    print(f"Key: {skey.kid:03d}, Acc: {skey.check_accuracy()}")
+    band = resolve_band([skey])
+    print(print_infer_stats(skey.kid, skey.check_accuracy(band)))
 
 
 def infer_key_pool(output_dir):
@@ -586,6 +713,7 @@ def infer_key_pool(output_dir):
         "[blue]Resolving keys...", total=len(os.listdir(output_dir))
     )
     print(output_dir)
+    skeys = []
     for key_out_dir in os.listdir(output_dir):
         matches = re.search(pattern, key_out_dir)
         if matches:
@@ -593,8 +721,16 @@ def infer_key_pool(output_dir):
             skey = RSA_KEY.load_key(kid)
             progress.update(task_keys, description=f"[blue]Resolving key {kid}")
             skey.infer_directory(output_dir + "/" + key_out_dir)
-            print(f"Key: {skey.kid:03d}, Acc: {skey.check_accuracy()}")
+            skeys.append(skey)
         progress.update(task_keys, advance=1, refresh=True)
+
+    band = resolve_band(skeys)
+    reports = []
+    for skey in skeys:
+        b = skey.check_accuracy(band)
+        reports.append(b)
+        print(print_infer_stats(skey.kid, b))
+    return summarize_pool(reports)
 
 
 if __name__ == "__main__":
@@ -656,9 +792,28 @@ if __name__ == "__main__":
         help="RSA key ID",
     )
 
+    parser.add_argument(
+        "--adaptive",
+        action="store_true",
+        help="Pick the optimal confidence band per key (minimise unknown + w*wrong) "
+        "instead of a fixed band",
+    )
+
+    parser.add_argument(
+        "--w",
+        type=float,
+        help="Adaptive-band cost weight on wrong bits (default 50; higher = fewer "
+        "errors, more unknown)",
+    )
+
     args = parser.parse_args()
     if args.no_cache:
         use_cache = False
+
+    if args.adaptive:
+        bit_infer_thres = None
+    if args.w is not None:
+        wrong_infer_weight = args.w
 
     if args.number:
         trace_number = args.number
@@ -684,4 +839,5 @@ if __name__ == "__main__":
         infer_directory(skey, args.directory)
     elif args.keypool:
         with progress:
-            infer_key_pool(args.keypool)
+            summary = infer_key_pool(args.keypool)
+        print(summary)

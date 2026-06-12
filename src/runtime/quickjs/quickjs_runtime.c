@@ -83,6 +83,7 @@ void quickjs_eval_buf_loop(JSRuntime *rt,
 	/* pin_cpu(pinned_cpu0); */
 
 	log_info("Start quickjs eval loop");
+	log_info("RT eval loop running on core %d", get_current_cpu());
 
 	reset_sync_ctx(QUICKJS_PROJ_ID);
 

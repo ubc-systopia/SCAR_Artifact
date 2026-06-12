@@ -16,17 +16,17 @@ To run the evaluation execute the following command:
 
 ```bash
 cd SCAR_Artifact/build
-./src/runtime/quickjs/quickjs_rt ../experiments/quickjs_rsa/js/openpgp_rsa.js
+taskset -c 1,3,5,7,9,11,13,15 ././src/runtime/quickjs/quickjs_rt ../experiments/quickjs_rsa/js/openpgp_rsa.js
 ```
 
 ```bash
 cd SCAR_Artifact/build
-./experiments/quickjs_rsa/quickjs_rsa_key_pool
+taskset -c 1,3,5,7,9,11,13,15 ./experiments/quickjs_rsa/quickjs_rsa_key_pool
 ```
 
 ```bash
 cd SCAR_Artifact
-python experiments/quickjs_rsa/evaluation/extract_openpgp_rsa.py -p build/output/ --at PS
+python experiments/quickjs_rsa/evaluation/extract_openpgp_rsa.py -p build/output/quickjs_rsa_key_pool --at PS
 ```
 
 ### Key Pool Generation

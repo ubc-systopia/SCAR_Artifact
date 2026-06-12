@@ -3,6 +3,7 @@
 #include "arch.h"
 #include "shared_memory.h"
 #include <stdint.h>
+#include <string.h>
 #include "prime_probe.h"
 
 uint32_t PS_profile_once(EVSet *evset,
@@ -115,6 +116,10 @@ void *PS_attacker_thread(void *args) {
 		pin_cpu(pt_config->pin_cpu);
 		/* iso_pin_cpu(pt_config->pin_cpu); */
 	}
+
+	log_info("Attacker thread '%s' running on core %d",
+	         label,
+	         get_current_cpu());
 
 	tsc0 = rdtscp();
 
@@ -321,7 +326,7 @@ void dump_profiling_traces(const char *dump_prefix,
                            int sp_cnt,
                            int reset) {
 	static int trace_idx = 0;
-	char output_dir[128], output_file[256];
+	char output_dir[256], output_file[512];
 
 	if (reset) {
 		trace_idx = 0;

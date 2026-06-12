@@ -113,7 +113,7 @@ int *find_peaks(double *x,
                 uint32_t length,
                 uint32_t *peaks_cnt,
                 double prominence_thres) {
-	int i = 0, peaks_cnt_limit = 64;
+	int i = 0;
 	double global_peak = 0, peak_height = 0, local_peak_ratio = 0.05;
 	int *peaks = NULL;
 	for (int i = 0; i < length; ++i) {
@@ -121,10 +121,10 @@ int *find_peaks(double *x,
 	}
 	peak_height = global_peak * local_peak_ratio;
 
-	peaks = malloc(sizeof(double) * peaks_cnt_limit);
+	peaks = malloc(sizeof(*peaks) * length);
 
 	*peaks_cnt = 0;
-	i = 0;
+	i = 1;
 	while (i < length - 1) {
 		if (x[i - 1] < x[i] && x[i] > x[i + 1]) {
 			int left_valley = i - 1;
@@ -186,6 +186,9 @@ int check_cache_set_psd(uint64_t *probes,
 		log_debug(
 		    "global peak %.10lf, peaks count: %d", global_peak, peaks_cnt);
 		for (int i = 0; i < peaks_cnt && ret; ++i) {
+			if (psd[peak_indice[i]] < global_peak * 0.2) {
+				continue;
+			}
 			double freq = (double)peak_indice[i] * fs / nperseg;
 			int round_i = round(freq / target_base_freq);
 			double round_freq = round_i * target_base_freq;
