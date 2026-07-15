@@ -17,3 +17,4 @@ void Print(const v8::FunctionCallbackInfo<v8::Value>& info);
 v8::MaybeLocal<v8::String> ReadFile(v8::Isolate* isolate, const char* name);
 void Read(const v8::FunctionCallbackInfo<v8::Value>& info) ;
 void Rdtscp(const v8::FunctionCallbackInfo<v8::Value>& info) ;
+void v8_run_loop(char *argv[]);
