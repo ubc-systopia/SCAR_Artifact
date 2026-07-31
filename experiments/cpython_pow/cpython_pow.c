@@ -70,6 +70,8 @@ void FF_profile_pow() {
 
 	CPYTHON_TARGET_CACHELINE(TARGET_ADDRESS_OFFSET)
 
+	pthread_barrier_wait(sync_ctx.barrier);
+
 	for (int i = 0; i < (int)victim_runs; ++i) {
 		log_info("Attacker Iteration %d", i);
 
