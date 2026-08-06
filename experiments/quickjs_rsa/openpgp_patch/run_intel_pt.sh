@@ -63,6 +63,9 @@ done
 python3 "$SCRIPT_DIR/compare_intel_pt.py" \
 	"$RESULTS_DIR/false.trace" "$RESULTS_DIR/true.trace" \
 	> "$RESULTS_DIR/path_diff.txt"
+python3 "$SCRIPT_DIR/compare_intel_pt_sets.py" \
+	"$RESULTS_DIR/false.trace" "$RESULTS_DIR/true.trace" \
+	> "$RESULTS_DIR/instruction_set_diff.txt"
 
 echo "Intel PT outputs: $RESULTS_DIR"
 echo "Focused path diff: $RESULTS_DIR/path_diff.txt"
