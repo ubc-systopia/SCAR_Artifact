@@ -4,7 +4,7 @@ Artifact for REPORT.md (section 5.2). OpenPGP.js's proposed constant-time patch
 replaces the secret-dependent ternary in `modExp` with a masked selection over
 BigInts. This removes the bytecode branch but leaves the amount of work done by
 QuickJS's big-integer library dependent on the key bit. A Prime+Scope attack on
-one signature recovers 1995 of the lowest 2048 exponent bits with 16 errors.
+one signature recovers 3976 of the 4094 exponent bits with 30 errors.
 
 ## What is here
 

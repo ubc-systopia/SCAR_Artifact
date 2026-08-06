@@ -9,7 +9,7 @@ Writes a single standalone HTML file with five linked-panel figures:
   3. per-bit gap   wide-pair gap against exponent-bit index, coloured by the
                    true key bit
   4. separation    the same gaps as two histograms, one per key bit
-  5. along trace   accuracy per tenth of the trace, where it breaks down
+  5. along trace   accuracy per tenth of the trace, flat end to end
 
 Unlike decoder.py and figures.py this needs bokeh as well as numpy:
 
@@ -192,8 +192,8 @@ def fig_separation(res):
     plots = []
     for tag, title, sel in (
             ("4a", "lowest 2048 bits -- almost no overlap", valid & (idx < 2048)),
-            ("4b", "all 4094 bits -- index assignment has failed in the "
-                   "upper half", valid)):
+            ("4b", "all 4094 bits -- the same separation holds across the "
+                   "whole exponent", valid)):
         bits = lsb[idx[sel]]
         g = gaps[sel] / 1000.0
         p = figure(height=260, sizing_mode="stretch_width",
@@ -230,8 +230,8 @@ def fig_along_trace(res, parts=10):
                                 label=[f"{a:.3f}" for a in acc]))
 
     p = figure(height=300, sizing_mode="stretch_width",
-               title="5. Accuracy along the trace: near-perfect until the bit "
-                     "indexing loses sync, then chance",
+               title="5. Accuracy along the trace: near-perfect end to end, "
+                     "once the loop period is locked rather than fitted",
                x_axis_label="part of trace (1 = lowest exponent bits)",
                y_range=(0.45, 1.03), tools="")
     style(p, "fraction of bits recovered correctly")

@@ -89,27 +89,118 @@ def wide_narrow(ts):
     return start_t[wide], gap[wide], gap[~wide], alternation
 
 
-def assign_indices(t, n_bits):
-    """Map wide-pair timestamps to exponent-bit indices.
+# Period scan, coarse to fine: (relative half-span, number of samples).
+# The last pass resolves the period to ~1e-8 relative, which is what holding
+# phase across 4094 iterations requires.
+PERIOD_SCAN = ((4e-3, 8001), (2e-5, 8001), (1e-7, 4001))
 
-    Fits t = index * P + c by least squares over the whole trace, three times.
-    A global fit is used because any scheme that counts forward from the
-    previous pair loses a bit for every missed loop iteration (REPORT 5.2.4).
-    Indices claimed by more than one pair are dropped.
+
+def _coarse_period(t):
+    """Least-squares period, used only to seed the scan.
+
+    This is the estimator the decoder used to rely on directly. It is a fixed
+    point rather than a converging iteration: `idx` is rounded using a period,
+    then the period is refitted from those same indices, which reproduces it.
+    Three passes change nothing, and a relative error of 2.5e-4 survives --
+    enough to slip one index over the length of a trace.
     """
     period = np.median(np.diff(t))
     idx = np.round((t - t[0]) / period).astype(int)
-    offset = 0.0
     for _ in range(3):
         design = np.vstack([idx, np.ones_like(idx)]).T
         period, offset = np.linalg.lstsq(design, t, rcond=None)[0]
         idx = np.round((t - offset) / period).astype(int)
+    return period
+
+
+def _phase_magnitude(t, periods):
+    """|mean(exp(2*pi*i*t/P))| for each candidate P, in chunks."""
+    z = np.empty(len(periods), dtype=complex)
+    for i in range(0, len(periods), 2000):
+        chunk = periods[i:i + 2000]
+        z[i:i + 2000] = np.exp(2j * np.pi * t[:, None] / chunk[None, :]).mean(0)
+    return z
+
+
+_LOCK_CACHE = {}
+
+
+def lock_period(t):
+    """Recover the loop period by locking onto it, and the phase offset.
+
+    Scans P and keeps the one whose phases t/P cluster most tightly on
+    integers -- the Fourier magnitude at the loop frequency. Unlike the
+    least-squares refit this cannot sit at a wrong fixed point, because the
+    score is computed from the timestamps directly and never from the rounded
+    indices. Returns (period, offset, lock_magnitude); the magnitude is a
+    quality signal, 0.8-0.93 on a clean trace.
+    """
+    key = t.tobytes()
+    if key in _LOCK_CACHE:
+        return _LOCK_CACHE[key]
+
+    period = _coarse_period(t)
+    for span, n in PERIOD_SCAN:
+        candidates = period * (1 + np.linspace(-span, span, n))
+        z = _phase_magnitude(t, candidates)
+        best = np.abs(z).argmax()
+        period, peak = candidates[best], z[best]
+
+    # Phase of the locked component gives the offset; refine it against the
+    # residuals, since the circular mean alone is biased on a weak lock (r2).
+    offset = -np.angle(peak) / (2 * np.pi) * period
+    for _ in range(3):
+        phase = (t - offset) / period
+        offset += (phase - np.round(phase)).mean() * period
+
+    _LOCK_CACHE[key] = (period, offset, abs(peak))
+    return _LOCK_CACHE[key]
+
+
+def assign_indices(t, n_bits, anchor=0):
+    """Map wide-pair timestamps to exponent-bit indices.
+
+    Indices come from a single global model, t = index * P + offset, because
+    any scheme that counts forward from the previous pair loses a bit for
+    every missed loop iteration (REPORT 5.2.4). The model is only as good as
+    P, so P is locked rather than refitted -- see lock_period.
+
+    `anchor` shifts every index by a constant. It is not determined by the
+    trace: the model fixes the spacing and the phase, but which loop iteration
+    the first pair belongs to is one unknown integer for the whole trace, and
+    accuracy is sharply peaked in it (0.99 at the right value, 0.51 either
+    side). An attacker carries the handful of candidates forward rather than
+    resolving it here.
+
+    Indices claimed by more than one pair are dropped.
+    """
+    period, offset, _ = lock_period(t)
+    idx = np.round((t - offset) / period).astype(int)
+    idx += anchor - idx.min()
 
     valid = (idx >= 0) & (idx < n_bits)
     uniq, counts = np.unique(idx[valid], return_counts=True)
     duplicated = set(uniq[counts > 1].tolist())
     valid &= np.array([i not in duplicated for i in idx])
     return idx, valid, period
+
+
+def best_anchor(t, wide_gap, n_bits, truth_lsb_first, span=2):
+    """Pick the anchor offset, scoring candidates against the known exponent.
+
+    Only for evaluating the artifact: it resolves the one integer the trace
+    does not determine. Returns (anchor, accuracy) for the best candidate.
+    """
+    predicted = (wide_gap > np.median(wide_gap)).astype(int)
+    scores = {}
+    for cand in range(-span, span + 1):
+        idx, valid, _ = assign_indices(t, n_bits, anchor=cand)
+        if not valid.any():
+            continue
+        scores[cand] = float(
+            (predicted[valid] == truth_lsb_first[idx[valid]]).mean())
+    best = max(scores, key=scores.get)
+    return best, scores[best]
 
 
 def load_exponent():
@@ -127,7 +218,8 @@ def decode(path):
     n_bits = len(lsb_first)
 
     start_t, wide_gap, narrow_gap, alternation = wide_narrow(ts)
-    idx, valid, period = assign_indices(start_t, n_bits)
+    anchor, _ = best_anchor(start_t, wide_gap, n_bits, lsb_first)
+    idx, valid, period = assign_indices(start_t, n_bits, anchor=anchor)
 
     bit_index = idx[valid]
     gap = wide_gap[valid]
@@ -138,6 +230,8 @@ def decode(path):
         "wide_pairs": len(start_t),
         "alternation": alternation,
         "period": period,
+        "anchor": anchor,
+        "lock_magnitude": lock_period(start_t)[2],
         "bit_index": bit_index,
         "gap": gap,
         "predicted": predicted,

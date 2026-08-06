@@ -81,7 +81,7 @@ def main():
         print(row)
     print("  cell = accuracy [errors / bits assigned an index]")
 
-    rule("Table 5 - combining traces does not help (REPORT 5.2.5)")
+    rule("Table 5 - combining traces buys coverage, not accuracy (REPORT 5.2.5)")
     names = [r["name"] for r in results]
     by_name = {r["name"]: r for r in results}
 
@@ -118,8 +118,9 @@ def main():
             print(f"{f'{lo}-{hi}':<16}{(pa[lo:hi][m] == t).mean():>10.3f}"
                   f"{(pb[lo:hi][m] == t).mean():>10.3f}"
                   f"{(pa[lo:hi][m] == pb[lo:hi][m]).mean():>11.3f}")
-        print("\nHigh agreement in ranges where both are near 0.5 accuracy means "
-              "the errors\nare shared, not independent, so combining traces "
+        print("\nBoth traces are near-perfect throughout, so agreement is high "
+              "everywhere.\nThe residual errors are still largely shared rather "
+              "than independent, so combining traces "
               "cannot remove them.")
     return 0
 

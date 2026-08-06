@@ -22,7 +22,8 @@ def enrich(path):
     ts, _ = D.load_trace(path)
     lsb_first = D.load_exponent()
     start_t, wide_gap, _, _ = D.wide_narrow(ts)
-    idx, valid, _ = D.assign_indices(start_t, len(lsb_first))
+    idx, valid, _ = D.assign_indices(start_t, len(lsb_first),
+                                     anchor=res["anchor"])
     res.update(wide_start=start_t, wide_gap=wide_gap,
                idx=idx, valid=valid, lsb_first=lsb_first)
     return res

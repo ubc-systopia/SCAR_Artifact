@@ -13,15 +13,21 @@ import decoder as D
 
 # (trace, wide_pairs, alternation, correlation, n, accuracy)
 EXPECTED = [
-    ("r0", 4023, 0.982, +0.4994, 3989, 0.7766),
-    ("r1", 3988, 0.979, +0.4242, 3967, 0.7373),
-    ("r2", 3987, 0.975, +0.0746, 3960, 0.5566),
-    ("r3", 4008, 0.977, +0.5151, 3967, 0.7751),
-    ("r4", 4024, 0.979, +0.0417, 3988, 0.5238),
+    ("r0", 4023, 0.982, +0.8743, 3991, 0.9915),
+    ("r1", 3988, 0.979, +0.9089, 3976, 0.9925),
+    ("r2", 3987, 0.975, +0.7501, 3953, 0.9679),
+    ("r3", 4008, 0.977, +0.8992, 3972, 0.9894),
+    ("r4", 4024, 0.979, +0.8961, 3989, 0.9817),
 ]
 
 # Errors among the lowest 2048 exponent bits, and bits assigned an index.
-EXPECTED_LOW = {"r0": (16, 1995), "r1": (65, 1972), "r3": (21, 1985)}
+EXPECTED_LOW = {"r0": (17, 1993), "r1": (19, 1981), "r2": (56, 1991),
+                "r3": (23, 1989), "r4": (66, 1992)}
+
+# The anchor each trace resolves to, and the lock magnitude. The anchor is the
+# one integer the trace does not determine (see decoder.assign_indices); it is
+# recorded here so a change in it shows up as a failure rather than silently.
+EXPECTED_ANCHOR = {"r0": 1, "r1": 0, "r2": 0, "r3": 1, "r4": 0}
 
 TOL = 1e-3
 failures = []
@@ -58,6 +64,7 @@ def main():
         check(f"{name} correlation", D.correlation(r["gap"], r["truth"]), corr)
         check(f"{name} bits assigned", len(r["gap"]), n, tol=0)
         check(f"{name} accuracy", D.accuracy(r["predicted"], r["truth"]), acc)
+        check(f"{name} anchor", r["anchor"], EXPECTED_ANCHOR[name], tol=0)
 
         fcorr = D.correlation(r["gap"], r["truth_forward"])
         facc = D.accuracy(r["predicted"], r["truth_forward"])
