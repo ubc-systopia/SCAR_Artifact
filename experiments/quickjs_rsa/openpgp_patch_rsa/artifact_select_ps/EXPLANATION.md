@@ -94,6 +94,31 @@ The fix is written in JavaScript, but it does not *run* in JavaScript. It runs i
 the engine — here, QuickJS — and in particular inside the engine's big-number
 library, which is what actually performs `&` and `|` on 4096-bit values.
 
+A single `|` in the JavaScript source turns into this:
+
+```mermaid
+flowchart TD
+    JS["JavaScript source<br/><code>(a &amp; m1) | (b &amp; m2)</code><br/><i>looks like one operator</i>"]
+    OP["QuickJS bytecode<br/><code>OP_or</code>"]
+    BIN["js_binary_arith_bigint"]
+    OR["bf_logic_or<br/><b>← the watched cache line</b>"]
+    LOP["bf_logic_op<br/><i>work depends on operand size</i>"]
+    SZ["size the answer:<br/>l = f(a-&gt;expn, b-&gt;expn)"]
+    RS["bf_resize(r, l)<br/><i>allocate l limbs</i>"]
+    LOOP["loop l times"]
+    NORM["bf_normalize_and_round<br/><i>zero and non-zero<br/>take different arms</i>"]
+
+    JS --> OP --> BIN --> OR --> LOP
+    LOP --> SZ --> RS --> LOOP --> NORM
+
+    style OR fill:#c44,color:#fff
+    style SZ fill:#e8a,color:#000
+    style NORM fill:#e8a,color:#000
+```
+
+The operator the programmer wrote is at the top. Everything below it is a function
+call, and the three shaded boxes are all sensitive to how big the numbers are.
+
 That library is not constant-time, and it was never meant to be. When it ORs or ANDs
 two numbers, it first works out how big the answer needs to be, then allocates that
 much space, then loops over that many 64-bit chunks. **The amount of work is
@@ -106,14 +131,108 @@ the secret bit, but the *values* are not:
   second produces zero;
 - when the bit is 0, it is the other way round.
 
-Zero is a special case in the library: it has no significant chunks at all, so the
-cleanup pass that scans for significant chunks does almost nothing, whereas for a
-full-size number it does a lot. And the OR that follows inherits its size from
-whichever operand is the big one.
+Zero is a special case in the library, handled on a different path from a full-size
+number. And the OR that follows inherits its size from whichever operand is the big
+one.
 
 So the secret bit no longer decides *which instructions run*. It decides *how large
 the numbers handed to those instructions are*, and the library spends time in
 proportion to size. The branch is gone; the timing difference is not.
+
+### 4.1 The library function, simplified
+
+Here is the actual function that does the work, `bf_logic_op` in QuickJS's
+`libbf.c`. Both `&` and `|` on big integers go through it — `bf_logic_or` is a
+one-line wrapper that calls it with `op = OR`. Error handling and the negative-number
+path are stripped out below; the surviving lines are unchanged. A "limb" is one
+64-bit chunk of a big number, and `expn` is, for a non-negative integer, the number
+of significant bits it has.
+
+```c
+static int bf_logic_op(bf_t *r, const bf_t *a, const bf_t *b, int op)
+{
+    /* ---- 1. How many limbs will the answer need? ---- */
+    if (op == BF_LOGIC_AND && r_sign == 0)
+        l = bf_min(a->expn, b->expn);   /* AND: bounded by the SMALLER operand */
+    else
+        l = bf_max(a->expn, b->expn);   /* OR:  bounded by the LARGER  operand */
+
+    l = (bf_max(l, 1) + LIMB_BITS - 1) / LIMB_BITS;   /* bits -> limbs, LIMB_BITS = 64 */
+
+    /* ---- 2. Allocate that many limbs ---- */
+    if (bf_resize(r, l))
+        goto fail;
+
+    /* ---- 3. Loop over them, one chunk at a time ---- */
+    for (i = 0; i < l; i++) {
+        v1 = get_bits(a->tab, a->len, a_bit_offset + i * LIMB_BITS);
+        v2 = get_bits(b->tab, b->len, b_bit_offset + i * LIMB_BITS);
+        r->tab[i] = bf_logic_op1(v1, v2, op);        /* the actual | or & */
+    }
+
+    /* ---- 4. Clean up: trim leading zero limbs, renormalise ---- */
+    r->expn = l * LIMB_BITS;
+    bf_normalize_and_round(r, BF_PREC_INF, BF_RNDZ);
+    ...
+}
+```
+
+The point is that `l` — which controls the allocation in step 2 and the trip count in
+step 3 — is computed **from the operands**, not from a fixed width. There is no
+constant-time discipline here, and there was never meant to be: this is a general
+big-number library, and doing less work on smaller numbers is exactly what it should
+do.
+
+Step 4 is worth expanding, because it is where zero and non-zero diverge most:
+
+```c
+int bf_normalize_and_round(bf_t *r, limb_t prec1, bf_flags_t flags)
+{
+    l = r->len;
+    while (l > 0 && r->tab[l - 1] == 0)     /* scan down past zero limbs */
+        l--;
+
+    if (l == 0) {                            /* the whole value was zero */
+        r->expn = BF_EXP_ZERO;
+        bf_resize(r, 0);                     /* free the buffer entirely */
+    } else {
+        shift = clz(r->tab[l - 1]);          /* align so the top bit is 1 */
+        if (shift != 0) {
+            for (i = 0; i < l; i++)          /* a second pass over l limbs */
+                r->tab[i] = (r->tab[i] << shift) | ...;
+        }
+        __bf_round(r, prec1, flags, l, 0);
+    }
+    ...
+}
+```
+
+Now put the two cases side by side. Recall from the table in section 3 that one of the
+two ANDs produces a full-size 4096-bit value and the other produces zero, and *which
+one* is decided by the secret bit.
+
+|                          | operand is zero                                | operand is a full 4096-bit value              |
+|--------------------------|------------------------------------------------|-----------------------------------------------|
+| the `while` scan         | walks all 64 limbs, every one of them zero     | stops immediately at the top limb             |
+| which arm is taken       | the `l == 0` arm: set exponent, free the buffer | the `else` arm                                |
+| the alignment pass       | does not happen                                 | a second loop over all 64 limbs, if a shift is needed |
+| the rounding call        | skipped                                         | `__bf_round` runs                             |
+| the following OR's `l`   | comes from the *other* operand                  | comes from *this* one                         |
+
+Note that it is not simply "zero is faster". Zero does a longer initial scan and then
+almost nothing; non-zero exits the scan instantly and then does more work. The two
+paths are just *different*, and different is all the attack needs — it is measuring an
+interval, not looking for a known sign.
+
+Three separate quantities therefore depend on the secret: the number of limbs
+allocated, the trip count of the main loop, and the work done by the cleanup pass.
+
+One thing the report is careful about, and worth repeating: **the two ANDs run the same
+number of iterations either way.** For AND, `l` is taken from the *smaller* operand, and
+the mask is always at least as large as `a` or `b`, so `l` ends up equal to the bit
+length of `a` (or of `b`) no matter what `cond` is. The trip count of the AND loop is
+*not* the leak. The leak is which AND *returns* zero, and what that does to step 4 and
+to the OR that follows.
 
 This is the general lesson of the report: **in a managed language like JavaScript, a
 bitwise operator is not a machine instruction. It is a function call whose cost grows
@@ -168,8 +287,76 @@ offset gives the address. No searching is needed.
 ## 6. Turning timestamps into bits
 
 What comes out of the measurement is a long list of timestamps — moments when the
-`bf_logic_or` line was touched. Roughly 16,000 of them for one signature. The job now
-is to turn that into 4094 bits.
+`bf_logic_or` line was touched. Roughly 16,000 of them for one signature (16,809 in
+trace r0). The job now is to turn that into 4094 bits.
+
+### The pattern we are looking for
+
+Here is what the attacker actually records. Time runs left to right; each tick is one
+detected cache access. The top row is the signal line, the bottom row the control line.
+Four loop iterations — four bits of the key — are shown.
+
+![Raster of the two watched cache lines over four loop iterations](results/figures/fig1_raster.png)
+
+The accesses arrive in **pairs**, two pairs per loop iteration. The shaded pair in each
+iteration is the one that carries the bit; its width is the measurement. The gap between
+the two ticks of a shaded pair is visibly larger where the true bit is 1.
+
+Two facts make this usable:
+
+1. **The gaps come in two wildly different scales**, with almost nothing in between:
+
+   ![Histogram of all inter-access gaps, showing two well-separated scales](results/figures/fig2_gap_scales.png)
+
+   Inside a pair the gap is ~25,000–32,000 cycles; between pairs it is ~278,000. Only
+   1.7% of gaps fall anywhere in the middle. So the threshold that splits "inside a
+   pair" from "between pairs" — the decoder uses 100,000 — can be read off the data
+   instead of tuned, which matters because a tuned threshold could manufacture a result.
+   (`REPORT.md` describes this valley as completely empty; measured on r0 it is 98.3%
+   empty. Same argument, stated more precisely.)
+2. **Wide and narrow pairs alternate**, 98.2% of the time in r0. So each loop iteration
+   contributes exactly one of each, and the decoder can tell them apart by a simple
+   median split.
+
+### The bit itself
+
+Zoom in on the wide pair. Its internal gap is the measurement. Plot one dot per exponent
+bit — the gap on the vertical axis, the bit position on the horizontal — and colour each
+dot by the *true* value of that key bit:
+
+![Wide-pair gap per exponent bit, coloured by the true key bit](results/figures/fig3_per_bit.png)
+
+The colours were not used to draw the picture; they were added afterwards to check it.
+The dots sort themselves into two bands with a clean corridor between, and the dashed
+line — the median, which is all the decoder knows — lands in that corridor.
+**That is the whole attack:** read the gap, compare it against the median, and you have
+the bit.
+
+The same data as two histograms, over the lowest 2048 bits:
+
+![Gap distribution by true key bit over the lowest 2048 bits, showing almost no overlap](results/figures/fig4a_separation_low.png)
+
+The two distributions barely touch — over the lowest 2048 bits, a single wide pair out of
+~2000 lands on the wrong side of the split, and the gap correlates with the key bit at
++0.842.
+
+The catch is that this clean picture only holds for the first part of the trace. Over
+all 4094 bits it degrades badly:
+
+![Gap distribution by true key bit over all 4094 bits, showing substantial overlap](results/figures/fig4b_separation_all.png)
+
+Notice the shape of the failure. The `bit = 1` distribution has grown a *second* lump
+sitting exactly on top of the `bit = 0` peak, and vice versa. This is not the signal
+fading into noise — it is a fraction of the pairs having been handed the *wrong bit
+index*, so a genuinely wide gap gets scored against a bit that was really 0. The
+underlying measurement is just as good at the end of the trace as at the start; the
+bookkeeping that says which bit it belongs to is what breaks. The index-assignment
+problem described below is exactly this.
+
+*(Every figure here is generated from the shipped traces by `analysis/plot_figures.py`
+— nothing is drawn freehand. Interactive versions, with pan, zoom and hover, are in
+`results/figures_r0.html`; `analysis/figures.py` prints the same content as text if you
+would rather not install bokeh.)*
 
 ### The first attempt fails, informatively
 
@@ -279,9 +466,15 @@ r0:  +0.938 +0.685 +0.864 +0.897 +0.959 +0.478 +0.049 +0.118 +0.003 −0.025
 r3:  +0.857 +0.875 +0.936 +0.901 +0.949 +0.461 +0.049 +0.082 −0.006 −0.002
 ```
 
-The first half is at +0.94 to +0.96 — nearly perfect. Then the index assignment loses
-synchronisation and the second half is indistinguishable from chance. It is one failure,
-at one point, not gradual degradation.
+Drawn out, with the corresponding per-part accuracy for r0 (recomputed from the
+shipped trace):
+
+![Accuracy per tenth of the trace: about 0.99 for the first five parts, then falling to chance](results/figures/fig5_along_trace.png)
+
+The first half is at +0.94 to +0.96 and 99% accurate — nearly perfect. Then the index
+assignment loses synchronisation and the rest is indistinguishable from chance. It is
+one failure, at one point, not gradual degradation — which is why the fix (accounting
+for missing iterations) would be worth much more than better measurement hardware.
 
 Because the trace is read backwards, the *first* half of the trace corresponds to the
 *lowest* bits of `d`. So:

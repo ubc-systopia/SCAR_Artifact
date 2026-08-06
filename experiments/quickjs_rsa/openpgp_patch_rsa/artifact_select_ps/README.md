@@ -10,9 +10,15 @@ one signature recovers 1995 of the lowest 2048 exponent bits with 16 errors.
 
 ```
 REPORT.md                    the writeup (section 5.2)
+EXPLANATION.md               plain-language walkthrough of the attack, with figures
 analysis/decoder.py          decoder; needs only numpy
 analysis/reproduce.py        regenerates every table in the report
 analysis/verify.py           checks the output against the published numbers
+analysis/figures.py          the figures as text; needs only numpy
+analysis/plot_figures.py     the figures as interactive HTML; needs bokeh
+analysis/make_pngs.py        renders each figure to PNG; needs bokeh + playwright
+results/figures_r0.html      interactive figures (pan, zoom, hover)
+results/figures/*.png        static figures, as embedded in EXPLANATION.md
 data/traces/r{0..4}.out.gz   five Prime+Scope traces, one signature each
 victim/openpgp_select_rsa.js   victim entry point
 victim/openpgp_select_patched.js   OpenPGP.js 5.11.2 with the patch applied
@@ -57,6 +63,22 @@ All checks passed. REPORT.md numbers reproduced.
 ```
 
 `results/expected_output.txt` holds the full reference output for diffing.
+
+### Figures
+
+`EXPLANATION.md` is a plain-language walkthrough of the whole attack; its figures are
+generated from the same traces and are regenerated with:
+
+```bash
+cd analysis
+python3 figures.py                            # text versions, numpy only
+python3 plot_figures.py                       # -> ../results/figures_r0.html
+python3 make_pngs.py                          # -> ../results/figures/*.png
+```
+
+The last two need `pip install bokeh` (and `playwright` plus
+`python3 -m playwright install chromium` for the PNGs). Nothing in the verification
+path depends on them. Pass `--trace r1` (etc.) to plot any of the five traces.
 
 ## Path B: collect new traces
 
