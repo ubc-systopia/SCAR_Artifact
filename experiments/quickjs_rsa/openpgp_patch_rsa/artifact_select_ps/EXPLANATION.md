@@ -340,17 +340,12 @@ The two distributions barely touch — over the lowest 2048 bits, a single wide 
 ~2000 lands on the wrong side of the split, and the gap correlates with the key bit at
 +0.842.
 
-The same picture holds over all 4094 bits:
+The same separation holds over all 4094 bits:
 
 ![Gap distribution by true key bit over all 4094 bits, showing the same separation](results/figures/fig4b_separation_all.png)
 
-Earlier versions of this decoder showed a badly degraded distribution here — the
-`bit = 1` histogram grew a *second* lump sitting exactly on top of the `bit = 0` peak,
-and vice versa. That was never the signal fading into noise: it was a fraction of the
-pairs being handed the *wrong bit index*, so a genuinely wide gap got scored against a
-bit that was really 0. The measurement was always as good at the end of the trace as at
-the start; the bookkeeping that said which bit it belonged to was what broke. Fixing
-that bookkeeping (see below) restores the separation across the whole exponent.
+That it holds at all depends entirely on each gap being filed against the right bit,
+which is the hard part of the decoding and is dealt with in §6.
 
 *(Every figure here is generated from the shipped traces by `analysis/plot_figures.py`
 — nothing is drawn freehand. Interactive versions, with pan, zoom and hover, are in
@@ -435,43 +430,31 @@ About 100 of the 4094 iterations do not produce a clean two-access pair — they
 at step 3. So the wide group holds roughly 3990 entries for 4094 bit positions, and you
 cannot simply match them up by counting.
 
-The naive fix — count forward from the previous pair — fails completely. One missed
-iteration shifts *every subsequent bit by one*, which destroys everything after it.
-Correlation drops to 0.02, i.e. nothing.
+Counting forward from the previous pair fails completely: one missed iteration shifts
+*every subsequent bit by one*. Correlation drops to 0.02, i.e. nothing.
 
 What is used instead is a single global model, `timestamp = bit_index × period + offset`,
 discarding any index claimed by more than one pair. Anchoring the fit within 640 smaller
 blocks instead reaches 0.717; the single global model does far better.
 
-**Everything then depends on the period being right.** Holding phase across 4094
-iterations means the period must be right to about one part in 8000 — a relative error ε
-displaces the index by ε × n, so ε ≳ 1.2 × 10⁻⁴ is enough to slip an index before the
-trace ends, and once it slips it stays slipped.
+**Everything then depends on the period being right.** A relative error ε displaces the
+index by ε × n, so across 4094 iterations ε ≳ 1.2 × 10⁻⁴ is enough to slip an index
+before the trace ends — and once it slips it stays slipped. That is one part in 8000.
 
-The decoder originally estimated the period by least squares, iterated three times. That
-is a *fixed point*, not a converging iteration: the indices are obtained by rounding with
-some period, and the period is then refitted from those same indices, which reproduces
-it. The three passes change nothing, and a relative error of 2.5 × 10⁻⁴ survives — just
-past the threshold. The result was one lost index, roughly halfway through every trace,
-and everything after it wrong. That single artefact was responsible for the whole
-second half of each trace scoring at chance.
+Least squares cannot deliver it. Fitting the period to indices that were themselves
+obtained by rounding with a period is a fixed point, not a converging iteration: it
+reproduces whatever it was given, and a relative error of 2.5 × 10⁻⁴ survives. So the
+period is estimated without ever consulting the rounded indices. Scan candidate periods
+and keep the one whose phases `t / P` cluster most tightly onto integers — the Fourier
+magnitude `|mean(exp(2πi·t/P))|` at the loop frequency, coarse-to-fine down to 10⁻⁸
+relative (`analysis/decoder.py::lock_period`). The magnitude at the peak doubles as a
+quality signal: 0.81–0.93 on four traces, 0.64 on r2, which is also the least accurate.
 
-The fix is to estimate the period without ever consulting the rounded indices. Scan
-candidate periods and keep the one whose phases `t / P` cluster most tightly onto
-integers — the Fourier magnitude `|mean(exp(2πi·t/P))|` at the loop frequency, evaluated
-coarse-to-fine down to 10⁻⁸ relative. The score is computed from the timestamps directly,
-so it cannot sit at a self-consistent wrong answer. `analysis/decoder.py::lock_period`.
-
-The magnitude at the peak doubles as a quality signal: 0.81–0.93 on the four clean
-traces, 0.64 on r2, which is also the trace that ends up least accurate.
-
-**One integer remains undetermined.** The model fixes the spacing and the phase, but not
-which loop iteration the *first* pair belongs to. Accuracy is sharply peaked in this
-offset — for r0 the five candidates score 0.498 / 0.514 / **0.990** / 0.513 / 0.495 — so
-it is one unknown for the whole trace, not a per-region drift. A real attacker carries
-the handful of candidates forward; the evaluation here resolves it against the known key
-(`decoder.best_anchor`) and records which value each trace needs, so this is one number
-per trace that the artifact does *not* claim to have recovered blind.
+**One integer remains undetermined**: which loop iteration the *first* pair belongs to.
+The model fixes the spacing and the phase but not this. Accuracy is sharply peaked in it —
+for r0 the five candidates score 0.498 / 0.514 / **0.990** / 0.513 / 0.495 — so it is one
+unknown for the whole trace. An attacker carries the candidates forward; the evaluation
+here resolves it against the known key (`decoder.best_anchor`).
 
 ## 7. What comes out
 
@@ -485,11 +468,10 @@ One RSA-4096 key, five separate signatures, each recorded independently:
 | r3    | 4008 | 0.977 | **+0.8992** | 3972 | 0.9894 | −0.0337 (0.4894) |
 | r4    | 4024 | 0.979 | **+0.8961** | 3989 | 0.9817 | −0.0217 (0.4956) |
 
-A correlation of 0.75–0.91 is 48 to 58 times the noise floor (1/√4094 = 0.0156). The
-forward-order control stays at chance in every trace, so the ordering is carrying real
-information and not an artefact of how the scoring is done.
+A correlation of 0.75–0.91 is 48 to 58 times the noise floor (1/√4094 = 0.0156), and the
+forward-order control stays at chance in every trace.
 
-Accuracy is now flat along the trace. Splitting each trace into ten consecutive parts:
+Accuracy is flat along the trace — splitting each into ten consecutive parts:
 
 ```
 r0:  0.987 0.995 0.990 0.992 0.992 0.985 0.990 0.995 0.992 0.995
@@ -498,13 +480,8 @@ r3:  0.982 0.987 0.990 0.990 0.992 0.995 0.987 0.995 0.990 0.985
 
 ![Accuracy per tenth of the trace: about 0.99 across all ten parts](results/figures/fig5_along_trace.png)
 
-Compare this against what the same figure showed before the period was locked: about 0.99
-for the first five parts, then a fall to chance for the rest. The bars that were at 0.5
-were never a measurement failure — they were correctly measured gaps filed against the
-wrong bit index.
-
-Because the trace is read backwards, the *first* part of the trace corresponds to the
-*lowest* bits of `d`:
+Because the trace is read backwards, the *first* part corresponds to the *lowest* bits
+of `d`:
 
 | lowest N bits | 256 | 1024 | 2048 | all 4094 |
 |---------------|----:|-----:|-----:|---------:|
@@ -515,41 +492,33 @@ Because the trace is read backwards, the *first* part of the trace corresponds t
 | r4 | 0.815 | 0.948 | 0.967 (1992) | 0.982 (3989) |
 
 **Trace r1 recovers 3976 of the 4094 bits of the private exponent with 30 errors, from a
-single signature.** Every one of the five traces, including the two that previously
-scored near chance, recovers the whole exponent at 0.97 or better.
+single signature**, and every trace recovers the whole exponent at 0.97 or better.
 
-This is well past what the partial-key-exposure results require — those recover a full
-RSA key from the lowest quarter of the private exponent with a small public exponent, and
-the lowest quarter here is at 0.95–0.99. The report still cites that bound rather than
-running the lattice computation, so the final step from "the exponent, with errors" to
-"the key" remains established in the literature but not demonstrated here.
+That is well past what the partial-key-exposure results require — they recover a full RSA
+key from the lowest quarter of the private exponent with a small public exponent, and the
+lowest quarter here is at 0.95–0.99. The report cites that bound rather than running the
+lattice computation, so the final step to the key is established in the literature but
+not demonstrated here.
 
-One detail that survives the fix: **taking more traces still does not improve accuracy.**
+**Taking more traces does not improve accuracy**, because the remaining errors are largely
+shared across traces rather than independent:
 
 | traces combined | 1 | 2 | 3 | 4 | 5 |
 |---|---:|---:|---:|---:|---:|
 | accuracy | 0.9925 | 0.9922 | 0.9922 | 0.9922 | 0.9922 |
 | bits covered | 3976 | 4091 | 4094 | 4094 | 4094 |
 
-What it buys instead is *coverage*: a single trace leaves ~120 bit positions with no pair
-assigned to them, and three traces between them cover all 4094. The accuracy plateau is
-the same phenomenon as before — the remaining errors are largely shared across traces
-rather than independent, so averaging cannot remove them — but it now sits at 0.99
-instead of 0.78, where it costs almost nothing.
+What they buy is coverage: one trace leaves ~120 bit positions with no pair assigned to
+them, and three cover all 4094.
 
 ## 8. Honest limits
 
-- One key, five signatures. All five now recover the exponent at 0.97 or better, but
-  five traces of one key is a thin basis for the claim; nothing here shows the numbers
-  hold across keys or machines.
-- r2 is the weakest trace (accuracy 0.968, lock magnitude 0.64 against 0.81–0.93 for the
-  others), and r2 and r4 both lose accuracy in their *first* tenth (0.899 and 0.884,
-  against ~0.99 everywhere else). That is a phase-estimation weakness at the very start
-  of a trace, and it is not explained.
-- One integer per trace — which loop iteration the first pair belongs to — is resolved
-  against the known key rather than blind. It is a 5-way choice with a sharp optimum, so
-  an attacker would carry the candidates forward, but the artifact does not demonstrate
-  resolving it without the answer.
+- One key, five signatures. Nothing here shows the numbers hold across keys or machines.
+- r2 and r4 lose accuracy in their *first* tenth (0.899 and 0.884, against ~0.99
+  everywhere else). A phase-estimation weakness at the start of a trace, unexplained.
+- The anchor integer is resolved against the known key rather than blind. It is a 5-way
+  choice with a sharp optimum, so an attacker would carry the candidates forward, but
+  that is not demonstrated here.
 - It is not known which of `SELECT`'s three calls into the big-number logic produces each
   of the ~4.1 recorded accesses per call. The attack works without knowing, but the mapping
   is unestablished.
