@@ -58,9 +58,8 @@ def style(p, ylabel=None):
 
 
 def fig_raster(path, res, n_iters=4, first_bit=40):
-    """Figure 1: time on x, the two watched cache lines on y."""
-    sig, _ = D.load_trace(path, D.SIGNAL_SLOT)
-    ctl, _ = D.load_trace(path, D.CONTROL_SLOT)
+    """Figure 1: time on x, accesses to the watched cache line on y."""
+    sig, _ = D.load_trace(path)
 
     period = res["period"]
     starts, gaps = res["wide_start"], res["wide_gap"]
@@ -74,22 +73,20 @@ def fig_raster(path, res, n_iters=4, first_bit=40):
         a = a[(a >= t0) & (a <= t1)]
         return (a - t0) / 1000.0        # kilocycles
 
-    p = figure(height=260, sizing_mode="stretch_width",
-               title="1. What the attacker records: two cache lines over "
-                     f"{n_iters} loop iterations",
+    p = figure(height=200, sizing_mode="stretch_width",
+               title="1. What the attacker records: the bf_logic_or cache "
+                     f"line over {n_iters} loop iterations",
                x_axis_label="time (thousands of CPU cycles, relative)",
-               y_range=(0.3, 2.7), tools="xpan,xwheel_zoom,reset",
+               y_range=(1.62, 2.72), tools="xpan,xwheel_zoom,reset",
                active_scroll="xwheel_zoom")
     style(p)
-    p.yaxis.ticker = [1, 2]
-    p.yaxis.major_label_overrides = {2: "bf_logic_or", 1: "bf_add_internal"}
+    p.yaxis.ticker = [2]
+    p.yaxis.major_label_overrides = {2: "bf_logic_or"}
     p.ygrid.grid_line_color = None
 
-    for a, y, color, name in ((sig, 2, BIT0, "bf_logic_or (signal)"),
-                              (ctl, 1, MUTED, "bf_add_internal (control)")):
-        x = rel(a)
-        p.segment(x0=x, x1=x, y0=y - 0.22, y1=y + 0.22,
-                  line_color=color, line_width=2, legend_label=name)
+    x = rel(sig)
+    p.segment(x0=x, x1=x, y0=1.78, y1=2.22,
+              line_color=BIT0, line_width=2, legend_label="bf_logic_or access")
 
     # Bracket each wide pair and label the bit it encodes.
     lo, hi = [], []
@@ -121,7 +118,7 @@ def fig_raster(path, res, n_iters=4, first_bit=40):
 
 def fig_gap_scales(path):
     """Figure 2: the two gap scales and the empty valley between them."""
-    ts, _ = D.load_trace(path, D.SIGNAL_SLOT)
+    ts, _ = D.load_trace(path)
     lo, hi = D.signing_window(ts)
     gaps = np.diff(ts[(ts >= lo) & (ts <= hi)]) / 1000.0
 

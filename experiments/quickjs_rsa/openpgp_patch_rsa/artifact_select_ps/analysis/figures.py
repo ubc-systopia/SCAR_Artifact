@@ -19,7 +19,7 @@ def enrich(path):
     the same computations repeated, not different ones.
     """
     res = D.decode(path)
-    ts, _ = D.load_trace(path, D.SIGNAL_SLOT)
+    ts, _ = D.load_trace(path)
     lsb_first = D.load_exponent()
     start_t, wide_gap, _, _ = D.wide_narrow(ts)
     idx, valid, _ = D.assign_indices(start_t, len(lsb_first))
@@ -116,14 +116,13 @@ def _raster_row(times, t0, span, cols, mark="|"):
 
 
 def raster(path, res, n_iters=2, cols=112, first_bit=40):
-    """Figure 4: time on x, the two watched cache lines on y, zoomed in.
+    """Figure 4: time on x, accesses to the watched cache line on y, zoomed in.
 
     At this zoom one column is several thousand cycles, so the wide/narrow
     difference is only a column or two. The point of this figure is the coarse
     structure -- pairs, alternation, loop period. Figure 5 resolves the bit.
     """
-    sig, _ = D.load_trace(path, D.SIGNAL_SLOT)
-    ctl, _ = D.load_trace(path, D.CONTROL_SLOT)
+    sig, _ = D.load_trace(path)
 
     period = res["period"]
     starts, idx, valid = res["wide_start"], res["idx"], res["valid"]
@@ -138,14 +137,13 @@ def raster(path, res, n_iters=2, cols=112, first_bit=40):
     ends = np.concatenate((breaks[1:] - 1, [len(win) - 1]))
     median_gap = np.median(res["wide_gap"].tolist() + [0])  # split, as in decoder
 
-    print(f"FIGURE 4  raster: the two watched cache lines over {n_iters} "
+    print(f"FIGURE 4  raster: the bf_logic_or cache line over {n_iters} "
           f"loop iterations")
     print(f"  one column = {per_col:,.0f} cycles   "
           f"(loop period {period:,.0f} = {cols // n_iters} columns)")
     print()
     print("                 time ->")
-    print("  bf_logic_or    |" + _raster_row(sig, t0, span, cols) + "|  signal")
-    print("  bf_add_internal|" + _raster_row(ctl, t0, span, cols, ":") + "|  control")
+    print("  bf_logic_or    |" + _raster_row(sig, t0, span, cols) + "|")
 
     ann = [" "] * cols
     wide_seen = 0
@@ -211,7 +209,7 @@ def main():
     path = next(p for p in D.trace_paths() if p.name.startswith(args.trace))
     print(f"# figures for {path.name}\n")
 
-    ts, _ = D.load_trace(path, D.SIGNAL_SLOT)
+    ts, _ = D.load_trace(path)
     timeline(ts)
 
     res = enrich(path)

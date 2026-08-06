@@ -3,7 +3,9 @@
 # quickjs_select_rsa_ps attacker. Companion to run_select_rsa_eval.sh (FR).
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# repo root: attack/ -> artifact_select_ps/ -> openpgp_patch_rsa/ -> quickjs_rsa/
+#            -> experiments/ -> SCAR_Artifact
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 BUILD="${ROOT}/build"
 CPUS="${CPUS:-1,3,5,7,9,11,13,15}"
 VICTIM_RUNS="${VICTIM_RUNS:-5}"

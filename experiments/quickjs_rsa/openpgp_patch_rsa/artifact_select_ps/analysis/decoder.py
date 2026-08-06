@@ -4,8 +4,10 @@ Recovers exponent bits from the interval between paired accesses to the
 bf_logic_or cache line. See REPORT.md sections 5.2.4 and 5.2.5.
 
 Depends only on numpy. Trace format is one line per probe record, columns
-separated by whitespace, each column "tsc:latency"; column 0 is bf_add_internal
-(control) and column 1 is bf_logic_or (signal).
+separated by whitespace, each column "tsc:latency". The current attacker probes
+one line, bf_logic_or, so traces have a single column. Traces recorded by the
+earlier two-probe attacker carry a dropped bf_add_internal column first, so the
+signal is always the last column (see signal_slot).
 """
 import gzip
 import json
@@ -21,13 +23,21 @@ KEY_FILE = ROOT / "victim" / "rsa_key_0.json"
 # > 270,000 cycles, so this is read off the data, not tuned.
 PAIR_SPLIT_CYCLES = 100_000
 
-# Column index of the bf_logic_or probe in the trace file.
-SIGNAL_SLOT = 1
-CONTROL_SLOT = 0
+def signal_slot(path):
+    """Column index of the bf_logic_or probe: the last one present."""
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt") as fh:
+        for line in fh:
+            cols = line.split()
+            if cols:
+                return len(cols) - 1
+    raise ValueError(f"empty trace: {path}")
 
 
-def load_trace(path, slot):
+def load_trace(path, slot=None):
     """Return (timestamps, latencies) for one probe slot, sorted by timestamp."""
+    if slot is None:
+        slot = signal_slot(path)
     opener = gzip.open if str(path).endswith(".gz") else open
     ts, lat = [], []
     with opener(path, "rt") as fh:
@@ -112,7 +122,7 @@ def load_exponent():
 
 def decode(path):
     """Decode one trace. Returns a dict of per-trace results."""
-    ts, _ = load_trace(path, SIGNAL_SLOT)
+    ts, _ = load_trace(path)
     lsb_first = load_exponent()
     n_bits = len(lsb_first)
 

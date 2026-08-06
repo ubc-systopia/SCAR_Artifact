@@ -249,12 +249,12 @@ only place a `|` between two big numbers happens is inside `SELECT` itself. So e
 single time that cache line is touched, it is because the victim is executing the line
 of code we care about. Nothing else in the program can make it fire.
 
-A second cache line, holding `bf_add_internal`, is watched at the same time as a
-**control**. That one is *not* exclusive — it fires constantly from the multiplications
-and divisions that happen every iteration regardless of the secret. It should show no
-relationship to the key, and if it did, that would mean something was wrong with the
-measurement rather than that the key had leaked. (It comes out at correlation 0.036,
-which is essentially nothing. Good.)
+That one line is all the attacker watches. An earlier version of this attack also
+watched `bf_add_internal` as a control — a line that fires constantly from the
+multiplications and divisions every iteration performs regardless of the secret, and
+so should show no relationship to the key. It doesn't (correlation 0.036), but the
+check turned out to be redundant: the forward-order control in §6 tests the same
+thing using the real signal, and does it better. Section 6 comes back to this.
 
 ### Why Prime+Scope and not Flush+Reload
 
@@ -280,7 +280,7 @@ The price is that Prime+Scope watches a whole cache *set* rather than a single l
 any other address that happens to land in that set is counted too. That is only
 acceptable because the target was chosen to be exclusive in the first place.
 
-The attacker knows exactly where the two target functions live: the victim and the
+The attacker knows exactly where the target function lives: the victim and the
 attacker share the same `libquickjs.so` library file, so its load address plus a fixed
 offset gives the address. No searching is needed.
 
@@ -293,10 +293,10 @@ trace r0). The job now is to turn that into 4094 bits.
 ### The pattern we are looking for
 
 Here is what the attacker actually records. Time runs left to right; each tick is one
-detected cache access. The top row is the signal line, the bottom row the control line.
-Four loop iterations — four bits of the key — are shown.
+detected access to the `bf_logic_or` line. Four loop iterations — four bits of the key
+— are shown.
 
-![Raster of the two watched cache lines over four loop iterations](results/figures/fig1_raster.png)
+![Raster of the watched cache line over four loop iterations](results/figures/fig1_raster.png)
 
 The accesses arrive in **pairs**, two pairs per loop iteration. The shaded pair in each
 iteration is the one that carries the bit; its width is the measurement. The gap between
@@ -402,7 +402,7 @@ by the fit described below.
 as the narrow group's, and that variation is the key bit showing through: a wide-pair gap
 above the median means bit 1, below means bit 0.
 
-**The narrow group is a third control.** Same function, same call structure, half the
+**The narrow group is a second control.** Same function, same call structure, half the
 spread, and no relationship to the key at all. Its existence is evidence that the wide
 group's variation is a real effect and not a measurement artefact that would affect
 everything equally.
@@ -419,10 +419,16 @@ everything equally.
 7. Reverse the order: square-and-multiply eats `d` from its lowest bit upward, so the
    trace runs backwards relative to how `d` is written down.
 
-Step 7 gives a fourth control for free. If you score in the *forward* order instead, you
-should get pure chance. You do: 0.487–0.490 accuracy in every trace, correlations around
-−0.02. If the forward order had also scored well, the "signal" would have been an artefact
-of the scoring, not the key.
+Step 7 gives the strongest control for free. If you score in the *forward* order instead,
+you should get pure chance. You do: 0.487–0.490 accuracy in every trace, correlations
+around −0.02. If the forward order had also scored well, the "signal" would have been an
+artefact of the scoring, not the key.
+
+This is a permutation test on the real signal: same gaps, same pair splitting, same index
+fit, key in the wrong order. That is why the `bf_add_internal` probe mentioned in §5 was
+dropped. It answered the same question — *is the decoder inventing this?* — with a
+weaker instrument, since a quiet trace from a different cache line does not tell you what
+the decoder does with a *live* one.
 
 ### The hard part: which bit is which
 

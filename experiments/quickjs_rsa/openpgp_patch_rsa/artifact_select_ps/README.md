@@ -126,13 +126,12 @@ over the lowest 2048 bits to be far above accuracy over all 4094.
 
 ### Two constants are specific to the QuickJS build
 
-`quickjs_select_rsa_ps.c` locates its targets by adding fixed file offsets to
+`quickjs_select_rsa_ps.c` locates its target by adding fixed file offsets to
 the load address of `libquickjs.so`:
 
 ```c
-static const uintptr_t bf_add_internal_full_path_file_offset = 0xb0065;
-static const uintptr_t bf_logic_or_file_offset               = 0xb1220;
-static const uintptr_t js_std_eval_file_offset               = 0x18da0;
+static const uintptr_t bf_logic_or_file_offset = 0xb1220;
+static const uintptr_t js_std_eval_file_offset = 0x18da0;
 ```
 
 These are valid only for the QuickJS commit and compiler flags used here.
@@ -143,10 +142,25 @@ obvious error.
 ## Reading the trace files
 
 One line per probe record. Columns are whitespace separated, each `tsc:latency`.
-Column 0 is the `bf_add_internal` probe, which is the non-exclusive control.
-Column 1 is the `bf_logic_or` probe, which carries the signal. A timestamp of 0
-means no record. `analysis/decoder.py:load_trace` parses this in 20 lines if you
-want to write your own analysis.
+The attacker probes one cache line, `bf_logic_or`, so traces have a single
+column. The traces in `data/traces` predate that and carry a second probe,
+`bf_add_internal`, in column 0; it was dropped as redundant (see
+"Why only one probe" below), and the signal is the last column either way.
+A timestamp of 0 means no record. `analysis/decoder.py:load_trace` parses this
+in 20 lines if you want to write your own analysis.
+
+## Why only one probe
+
+An earlier version watched `bf_add_internal` alongside the signal as a control,
+on the grounds that it is reached from `bf_mul`/`bf_divrem` on every loop
+iteration whatever the key bit, and so should not leak. It doesn't (correlation
+0.036), but that fact is redundant: the decoder's forward-order score is a
+permutation test over the real signal, and already rules out the pair-splitting
+and index fit manufacturing correlation from trace structure. A probe in a
+different LLC set also says nothing about what may be co-resident in
+`bf_logic_or`'s set, which is the only exposure Prime+Scope adds over
+Flush+Reload. Removing it leaves the result unchanged and the attack one thread
+and one eviction set smaller.
 
 ## Limitations
 
