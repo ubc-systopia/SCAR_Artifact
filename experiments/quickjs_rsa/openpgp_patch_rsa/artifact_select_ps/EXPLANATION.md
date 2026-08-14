@@ -83,171 +83,163 @@ anything with it leaves that thing unchanged. `mask` on its own is a 1 followed 
 - if `cond` is 1: the first AND gives back `a`, the second gives 0, the OR gives `a`.
 - if `cond` is 0: the first AND gives 0, the second gives back `b`, the OR gives `b`.
 
-Either way, exactly the same operations run in exactly the same order: two
-subtractions, one shift, two ANDs, one OR. No jump anywhere tests the secret. Read
+Either way, exactly the same operations run in exactly the same order: one shift, two
+subtractions, one addition, two ANDs, one OR. No jump anywhere tests the secret. Read
 as JavaScript source code, this is genuinely constant-time, and it does defeat the
 original attack.
+
+Keep an eye on that addition. It is the least interesting-looking operation in the
+expression — `mask - 1n + cond`, adjusting a mask by one — and it is where the whole
+thing comes apart.
 
 ## 4. Why the fix does not actually work
 
 The fix is written in JavaScript, but it does not *run* in JavaScript. It runs inside
 the engine — here, QuickJS — and in particular inside the engine's big-number
-library, which is what actually performs `&` and `|` on 4096-bit values.
+library (`libbf`), which is what actually performs arithmetic on 4096-bit values.
 
-A single `|` in the JavaScript source turns into this:
+Every operator in `SELECT` — not just the `&` and `|` the fix is built around, but the
+`<<`, the two `-`, and the `+` — is a call into that library, and the library is not
+constant-time. It was never meant to be: it is a general big-number library, and doing
+less work on smaller numbers is exactly what such a library should do.
+
+So the question is not *whether* something in `SELECT` leaks, but *what*. That can be
+measured directly: run `SELECT` on an instrumented QuickJS that timestamps each
+bytecode handler, with `cond` alternating between `0n` and `1n` and everything else
+held fixed (`openpgp_patch/run_opcode_timing.sh`, ten runs at the victim's real
+`maxBitLength` of 4096). Median cycles per handler, `cond=1` minus `cond=0`:
+
+| handler | source | `cond=0` | `cond=1` | delta | across 10 runs |
+|---|---|---:|---:|---:|---|
+| `add` | `mask - _1n + cond` | 612 | 2,034 | **+1,422** | +1,422 … +1,440 |
+| `sub` | `mask - cond`, `mask - _1n` | 1,218 | 1,260 | +42 | +34 … +159 |
+| `and` | both `&` | 1,272 | 1,288 | +16 | +16 … +33 |
+| `or` | the `\|` | 1,128 | 1,092 | −36 | −170 … −30 |
+| `shl` | `_1n << maxBitLength` | 348 | 346 | −2 | −2 … 0 |
+| | **whole `SELECT`** | | | **≈ +1,450** | +1,367 … +1,581 |
+
+The answer is unambiguous and was not what anyone was looking for. **The `&` and `|`
+operations the patch is built around contribute essentially nothing. Almost the entire
+bit-dependence is one addition — `+ cond` — in the construction of the second mask.**
 
 ```mermaid
 flowchart TD
-    JS["JavaScript source<br/><code>(a &amp; m1) | (b &amp; m2)</code><br/><i>looks like one operator</i>"]
-    OP["QuickJS bytecode<br/><code>OP_or</code>"]
+    JS["JavaScript source<br/><code>mask - _1n + cond</code><br/><i>looks like plain arithmetic</i>"]
+    OP["QuickJS bytecode<br/><code>OP_add</code>"]
     BIN["js_binary_arith_bigint"]
-    OR["bf_logic_or<br/><b>← the watched cache line</b>"]
-    LOP["bf_logic_op<br/><i>work depends on operand size</i>"]
-    SZ["size the answer:<br/>l = f(a-&gt;expn, b-&gt;expn)"]
-    RS["bf_resize(r, l)<br/><i>allocate l limbs</i>"]
-    LOOP["loop l times"]
-    NORM["bf_normalize_and_round<br/><i>zero and non-zero<br/>take different arms</i>"]
+    ADD["bf_add → bf_add_internal<br/><b>← the paths diverge here</b>"]
+    Z["<b>cond = 0n</b> — a BigInt of length 0<br/>zero-operand shortcut:<br/>copy the other operand, done"]
+    NZ["<b>cond = 1n</b> — length 1<br/>bf_resize + 64-limb add loop<br/>carry propagates out the top<br/>→ a second bf_resize"]
 
-    JS --> OP --> BIN --> OR --> LOP
-    LOP --> SZ --> RS --> LOOP --> NORM
+    JS --> OP --> BIN --> ADD
+    ADD --> Z
+    ADD --> NZ
 
-    style OR fill:#c44,color:#fff
-    style SZ fill:#e8a,color:#000
-    style NORM fill:#e8a,color:#000
+    style ADD fill:#c44,color:#fff
+    style Z fill:#e8a,color:#000
+    style NZ fill:#e8a,color:#000
 ```
 
-The operator the programmer wrote is at the top. Everything below it is a function
-call, and the three shaded boxes are all sensitive to how big the numbers are.
+`cond` is not a machine word here — it is a BigInt, produced by `exp & 1n`, and `0n`
+is represented as a big number of **length zero**. Length zero is a special case in
+`libbf`'s addition, taken by an explicit `if`. So the "branchless" patch is not
+branchless: `+ cond` turns the secret bit into a zero-length test on a BigInt operand,
+and that test is a real branch inside the engine.
 
-That library is not constant-time, and it was never meant to be. When it ORs or ANDs
-two numbers, it first works out how big the answer needs to be, then allocates that
-much space, then loops over that many 64-bit chunks. **The amount of work is
-proportional to how big the numbers are.**
+This is the general lesson of the report, and it applies more sharply than the original
+framing suggested: **in a managed language, an arithmetic operator is not a machine
+instruction. It is a function call, and it can branch on its arguments even when your
+source code does not.** Masking away the `if` you wrote does nothing about the ones the
+runtime adds underneath. It is not enough to check that the *operations* are the same
+on both paths; every value that touches the secret has to be checked too, including a
+value as innocuous-looking as `0n`.
 
-Now look again at the table above. The *operations* are identical for both values of
-the secret bit, but the *values* are not:
+### 4.1 The library function, and where it splits
 
-- when the bit is 1, the first AND produces a full-size 4096-bit number and the
-  second produces zero;
-- when the bit is 0, it is the other way round.
-
-Zero is a special case in the library, handled on a different path from a full-size
-number. And the OR that follows inherits its size from whichever operand is the big
-one.
-
-So the secret bit no longer decides *which instructions run*. It decides *how large
-the numbers handed to those instructions are*, and the library spends time in
-proportion to size. The branch is gone; the timing difference is not.
-
-### 4.1 The library function, simplified
-
-Here is the actual function that does the work, `bf_logic_op` in QuickJS's
-`libbf.c`. Both `&` and `|` on big integers go through it — `bf_logic_or` is a
-one-line wrapper that calls it with `op = OR`. Error handling and the negative-number
-path are stripped out below; the surviving lines are unchanged. A "limb" is one
-64-bit chunk of a big number, and `expn` is, for a non-negative integer, the number
-of significant bits it has.
+Here is the branch, `bf_add_internal` in QuickJS's `libbf.c`, at line 908:
 
 ```c
-static int bf_logic_op(bf_t *r, const bf_t *a, const bf_t *b, int op)
-{
-    /* ---- 1. How many limbs will the answer need? ---- */
-    if (op == BF_LOGIC_AND && r_sign == 0)
-        l = bf_min(a->expn, b->expn);   /* AND: bounded by the SMALLER operand */
-    else
-        l = bf_max(a->expn, b->expn);   /* OR:  bounded by the LARGER  operand */
-
-    l = (bf_max(l, 1) + LIMB_BITS - 1) / LIMB_BITS;   /* bits -> limbs, LIMB_BITS = 64 */
-
-    /* ---- 2. Allocate that many limbs ---- */
-    if (bf_resize(r, l))
-        goto fail;
-
-    /* ---- 3. Loop over them, one chunk at a time ---- */
-    for (i = 0; i < l; i++) {
-        v1 = get_bits(a->tab, a->len, a_bit_offset + i * LIMB_BITS);
-        v2 = get_bits(b->tab, b->len, b_bit_offset + i * LIMB_BITS);
-        r->tab[i] = bf_logic_op1(v1, v2, op);        /* the actual | or & */
-    }
-
-    /* ---- 4. Clean up: trim leading zero limbs, renormalise ---- */
-    r->expn = l * LIMB_BITS;
-    bf_normalize_and_round(r, BF_PREC_INF, BF_RNDZ);
-    ...
-}
+} else if (a->len == 0 || b->len == 0) {
+    bf_set(r, a);      /* libbf.c:923 — copy the other operand, then done */
+    goto renorm;
+}                      /* else: bf_resize + a full 64-limb add loop */
 ```
 
-The point is that `l` — which controls the allocation in step 2 and the trip count in
-step 3 — is computed **from the operands**, not from a fixed width. There is no
-constant-time discipline here, and there was never meant to be: this is a general
-big-number library, and doing less work on smaller numbers is exactly what it should
-do.
+`cond = 0n` has `len == 0`, so the add takes the shortcut and finishes with a copy.
+`cond = 1n` has `len == 1`, so it runs the full path — and because the left operand is
+`mask - 1n`, i.e. `2^4096 - 1`, adding 1 propagates a carry out of all 64 limbs and
+triggers a *second* `bf_resize` at `libbf.c:1017` to widen the result. That is the
++1,422 cycles.
 
-Step 4 is worth expanding, because it is where zero and non-zero diverge most:
+This is confirmed independently by Intel PT (`openpgp_patch/run_intel_pt.sh`), which
+records the instruction path actually taken. It localizes the divergence to a single
+branch, `bf_add_internal+0x26a`, which `addr2line` maps to the `if` above. The
+divergence is nine true-only and eight false-only instructions, all inside
+`bf_add_internal`, and it is byte-identical across captures at 2048, 4095 and 4096 bits
+(`openpgp_patch/pt_results_4096/instruction_set_diff.txt`).
 
-```c
-int bf_normalize_and_round(bf_t *r, limb_t prec1, bf_flags_t flags)
-{
-    l = r->len;
-    while (l > 0 && r->tab[l - 1] == 0)     /* scan down past zero limbs */
-        l--;
+### 4.2 What does *not* leak, and why the obvious guess was wrong
 
-    if (l == 0) {                            /* the whole value was zero */
-        r->expn = BF_EXP_ZERO;
-        bf_resize(r, 0);                     /* free the buffer entirely */
-    } else {
-        shift = clz(r->tab[l - 1]);          /* align so the top bit is 1 */
-        if (shift != 0) {
-            for (i = 0; i < l; i++)          /* a second pass over l limbs */
-                r->tab[i] = (r->tab[i] << shift) | ...;
-        }
-        __bf_round(r, prec1, flags, l, 0);
-    }
-    ...
-}
-```
+An earlier version of this document blamed the `&` and `|` themselves: the argument was
+that one AND produces a full-width 4096-bit value and the other produces zero, that zero
+and non-zero take different arms of `bf_normalize_and_round`, and that the following OR
+inherits its size from the larger operand. All of that is *true* as a description of
+`libbf`, and it is why the guess was attractive. It is simply not where the time goes —
+the handler table above measures the `and` pair at +16 cycles and the `or` at −36.
 
-Now put the two cases side by side. Recall from the table in section 3 that one of the
-two ANDs produces a full-size 4096-bit value and the other produces zero, and *which
-one* is decided by the secret bit.
+Two reasons the effect is smaller than it looks:
 
-|                          | operand is zero                                | operand is a full 4096-bit value              |
-|--------------------------|------------------------------------------------|-----------------------------------------------|
-| the `while` scan         | walks all 64 limbs, every one of them zero     | stops immediately at the top limb             |
-| which arm is taken       | the `l == 0` arm: set exponent, free the buffer | the `else` arm                                |
-| the alignment pass       | does not happen                                 | a second loop over all 64 limbs, if a shift is needed |
-| the rounding call        | skipped                                         | `__bf_round` runs                             |
-| the following OR's `l`   | comes from the *other* operand                  | comes from *this* one                         |
+- **The AND loop's trip count does not depend on the secret at all.** In `bf_logic_op`,
+  the AND path takes `l = bf_min(a->expn, b->expn)` — deliberately, with the comment "no
+  need to compute extra zeros for and" — and the real operand is always narrower than the
+  mask, so `l` is the operand's bit length either way.
+- **Zero is not simply cheaper.** The zero path does a longer scan for the top non-zero
+  limb and then almost nothing; the non-zero path exits that scan immediately and then
+  does more work. The two costs largely cancel.
 
-Note that it is not simply "zero is faster". Zero does a longer initial scan and then
-almost nothing; non-zero exits the scan instantly and then does more work. The two
-paths are just *different*, and different is all the attack needs — it is measuring an
-interval, not looking for a known sign.
+The moral is worth keeping: a mechanism that is *plausible* from reading the library
+source is not a measured one. The handler timing and the PT capture are what settled
+this, and they disagreed with the reading.
 
-Three separate quantities therefore depend on the secret: the number of limbs
-allocated, the trip count of the main loop, and the work done by the cleanup pass.
+### 4.3 One number that is still unexplained
 
-One thing the report is careful about, and worth repeating: **the two ANDs run the same
-number of iterations either way.** For AND, `l` is taken from the *smaller* operand, and
-the mask is always at least as large as `a` or `b`, so `l` ends up equal to the bit
-length of `a` (or of `b`) no matter what `cond` is. The trip count of the AND loop is
-*not* the leak. The leak is which AND *returns* zero, and what that does to step 4 and
-to the OR that follows.
-
-This is the general lesson of the report: **in a managed language like JavaScript, a
-bitwise operator is not a machine instruction. It is a function call whose cost grows
-with the size of its arguments.** Making the source code branch-free does nothing
-about that.
+The instrumented total, ≈ +1,450 cycles for the whole of `SELECT`, is smaller than the
+≈ +2,200 the Prime+Scope traces show (§6). That ~700-cycle residual is not accounted
+for. PT reports which instructions execute, not what they cost, so it cannot close the
+gap — but it does bound where the residual can *be*: the two paths are instruction-
+identical outside `bf_add_internal`, `bf_normalize_and_round`, `bf_resize` and
+`bf_add_limb`, so it is not somewhere else in `SELECT`. The likely source is the
+difference between the timing harness (fixed operands, `cond` alternating) and a real
+`modExp` (random bits, each result feeding the next multiply); that is not measured
+here.
 
 ## 5. What the attacker measures
 
 The attacker picks one specific function inside the big-number library, `bf_logic_or`,
 and watches the cache line that holds it.
 
-The reason for that choice is that it is *exclusive*: in the patched signing code, the
-only place a `|` between two big numbers happens is inside `SELECT` itself. So every
-single time that cache line is touched, it is because the victim is executing the line
-of code we care about. Nothing else in the program can make it fire.
+Note what this line is *for*. `bf_logic_or` is not where the leak happens — §4.2 shows
+it costs the same either way. It is a **marker**: it is called exactly once per loop
+iteration, at the very end of `SELECT`, so seeing it tells the attacker when `SELECT`
+finished. Paired with a marker at the start, that brackets `SELECT` and turns its
+duration into something measurable from outside. The attacker is timing the `+ cond`
+without ever observing it directly.
+
+The `|` itself is exclusive: in the patched signing code, the only place a `|` between
+two big numbers happens is inside `SELECT`. The *cache line* is not, and this is worth
+being precise about, because it explains a number that used to be unaccounted for. A
+cache line is 64 bytes, and in this build `bf_rint` sits 16 bytes before `bf_logic_or`,
+on the same line. `bf_rint` is called from the division routine, so every `%` in the
+loop touches the line too. Counting the actual calls in one signature: `bf_logic_or`
+fires 4,094 times (once per iteration, as expected) and `bf_rint` 13,305 times (~3.25
+per iteration). Their sum, 17,399, is what the ~17,000-record traces are made of. So
+what the attacker watches is "SELECT's `|`, plus the loop's divisions" — every access
+still comes from inside the modExp loop, but not all of them from `SELECT`.
+
+(The two `&` operations inside `SELECT` go to `bf_logic_and`, which lands on the *next*
+cache line and in a different cache set, so it is not part of this signal at all. A
+separate run that watches that line instead records ~12,500 events, matching its 12,282
+calls.)
 
 That one line is all the attacker watches. An earlier version of this attack also
 watched `bf_add_internal` as a control — a line that fires constantly from the
@@ -274,21 +266,25 @@ duration *inside* one call.
 reload, the attacker sits in a tight loop doing one timed read over and over, and
 records a timestamp the instant it notices the victim has evicted it. The loop period
 here is 154 cycles, against Flush+Reload's floor of 1778 — more than ten times finer,
-and it lifts the record to about 4.1 accesses per call.
+and it lifts the record to about 4.1 accesses per iteration (which, per above, is one
+`bf_logic_or` plus about 3.25 `bf_rint`).
 
 The price is that Prime+Scope watches a whole cache *set* rather than a single line, so
-any other address that happens to land in that set is counted too. That is only
-acceptable because the target was chosen to be exclusive in the first place.
+any other address that happens to land in that set is counted too — on top of the
+`bf_rint` co-residency, which is a property of the line itself and would affect
+Flush+Reload equally.
 
 The attacker knows exactly where the target function lives: the victim and the
-attacker share the same `libquickjs.so` library file, so its load address plus a fixed
-offset gives the address. No searching is needed.
+attacker share the same `libquickjs.so` library file, and `bf_logic_or` is an exported
+symbol, so the attacker just takes its address from the linker. No searching is
+needed.
 
 ## 6. Turning timestamps into bits
 
 What comes out of the measurement is a long list of timestamps — moments when the
-`bf_logic_or` line was touched. Roughly 16,000 of them for one signature (16,809 in
-trace r0). The job now is to turn that into 4094 bits.
+watched line was touched. Roughly 16,000 of them for one signature (16,809 in
+trace r0) — against 17,399 `bf_logic_or`+`bf_rint` calls actually made, so the probe
+catches almost all of them. The job now is to turn that into 4094 bits.
 
 ### The pattern we are looking for
 
@@ -317,6 +313,73 @@ Two facts make this usable:
 2. **Wide and narrow pairs alternate**, 98.2% of the time in r0. So each loop iteration
    contributes exactly one of each, and the decoder can tell them apart by a simple
    median split.
+
+### What the four ticks in an iteration actually are
+
+Timestamping every `bf_rint`/`bf_logic_and`/`bf_logic_or` call inside the victim (via
+an `LD_PRELOAD` shim over the PLT) shows the loop body is exactly the same seven calls
+every iteration — the string `a r r a a o` repeats 2,143 times without a single
+deviation in the steady state:
+
+| call | source line |
+| --- | --- |
+| `bf_logic_and` | `const lsb = exp & 1n` |
+| `bf_rint` | `exp >>= 1n` (the shift is lowered to a rounded multiply by a power of two) |
+| `bf_rint` | the `%` in `rx = (r * x) % n` |
+| `bf_logic_and` | `SELECT`'s `a & (mask - cond)` |
+| `bf_logic_and` | `SELECT`'s `b & (mask - 1n + cond)` |
+| `bf_logic_or` | `SELECT`'s `\|` |
+| `bf_rint` | the `%` in `x = (x * x) % n` |
+
+Only four of those seven are on the watched line — the three `bf_rint` and the
+`bf_logic_or`; the three `bf_logic_and` are on the next line. Drop them and the
+iteration reads:
+
+```
+rint(shift) ---- big multiply ---- rint(r*x % n) - SELECT - or ---- big square ---- rint(x*x % n) - shift ops - rint(shift) ...
+                    ~278,000                        ~30,000               ~278,000                   ~25,000
+```
+
+That is the whole pair structure. The two ~278,000-cycle gaps are the two modular
+multiplications, the two pairs are what survives on either side of them, and the two
+kinds of pair are:
+
+- **wide pair** — `rint(r*x % n)` → `or`: everything `SELECT` does. Measured with the
+  victim's own record of `lsb`, its gap is 29,608 cycles when the bit is 0 and 32,164
+  when the bit is 1, and a single threshold separates them 99.3% of the time.
+- **narrow pair** — `rint(x*x % n)` → next iteration's `rint(shift)`: the `exp & 1n` and
+  `exp >>= 1n` on the exponent. 25,282 vs 25,374 cycles — no usable dependence (58%,
+  and that is with the class imbalance doing the work).
+
+The Prime+Scope trace, measured from outside the victim, reproduces all four intervals:
+277,590 / 29,620 / 278,664 / 25,564 cycles against the instrumented 277,734 / 30,726 /
+278,880 / 25,326, and a loop period of 611,438 against 612,666. Even the ~1,100-cycle
+difference between the multiply and the square shows up, so the orientation — which
+pair follows which multiplication — is fixed by the measurement, not assumed.
+
+So the decoder's median split is not arbitrary: the wide class *is* the `SELECT` pair,
+and it is the only one that leaks.
+
+Narrowing further, the same instrumentation puts the bit-dependent time *between*
+`SELECT`'s two `&` calls, at roughly +1,300 cycles. That is exactly where §4 says it
+should be: the expression evaluates left to right, so what sits between the two `&`
+calls is `mask - _1n + cond`, and the `+ cond` is the leak.
+
+```
+sub   mask - cond
+&     ---- first &
+sub   mask - _1n      \
+add   + cond          /  between the two & calls — the +1,422-cycle divergence
+&     ---- second &
+|     ---- or
+```
+
+Take the *absolute* interposed figures with caution: the shim's per-call overhead is
+comparable to the interval it is timing here, so it inflates the endpoints of a short
+gap. The delta survives that (the overhead is the same on both paths, and +1,300 agrees
+with the +1,450 the independent handler timing gives for the whole of `SELECT`), but the
+interposer is not the evidence the §4 mechanism rests on — the per-handler timing and the
+PT capture are.
 
 ### The bit itself
 
@@ -519,9 +582,11 @@ them, and three cover all 4094.
 - The anchor integer is resolved against the known key rather than blind. It is a 5-way
   choice with a sharp optimum, so an attacker would carry the candidates forward, but
   that is not demonstrated here.
-- It is not known which of `SELECT`'s three calls into the big-number logic produces each
-  of the ~4.1 recorded accesses per call. The attack works without knowing, but the mapping
-  is unestablished.
+- The ~700-cycle gap between the instrumented cost of the leak (≈ +1,450) and what the
+  Prime+Scope traces show (≈ +2,200) is unexplained; see §4.3.
+- The per-handler timing and PT captures in §4 come from a standalone harness that calls
+  `SELECT` with fixed operands, not from the victim's `modExp`. The mechanism it
+  identifies is solid, but the exact cycle counts need not carry over.
 - The final lattice step to full key recovery is cited, not performed.
 - Path B (collecting new traces) needs an Intel CPU with an inclusive last-level cache,
   pinned frequency, disabled address randomisation, and a QuickJS build shared between
@@ -533,10 +598,12 @@ them, and three cover all 4094.
 
 OpenPGP.js's RSA signing leaked the private key through a conditional branch. The proposed
 fix removes the branch by computing both outcomes and masking one away with bitwise AND and
-OR, which is branch-free as JavaScript source. But JavaScript's `&` and `|` on 4096-bit
-numbers are function calls into the engine's big-number library, and that library does work
-proportional to the size of its operands. The secret bit still decides which operand is
-full-size and which is zero, so it still decides how long the operation takes. An attacker
+OR, which is branch-free as JavaScript source. But every operator in that expression is a
+function call into the engine's big-number library, and the leak simply moved to one nobody
+was watching: the `+ cond` that builds the second mask. `cond` is a BigInt, `0n` is stored
+with length zero, and length zero is a special case taken by an explicit `if` inside
+`libbf`'s addition — so the secret bit still selects a branch, 1,422 cycles wide, three
+levels below the source. An attacker
 sharing the machine watches one cache line inside that library with Prime+Scope, sees the
 accesses arrive in pairs, and reads each key bit off the width of the gap inside one pair
 per loop iteration. Given a loop period estimated accurately enough to hold phase across

@@ -1,6 +1,10 @@
 """Regenerate every table in REPORT.md section 5.2.5 from the included traces.
 
 Usage:  python3 analysis/reproduce.py [--traces DIR]
+        python3 analysis/reproduce.py --pool DIR [evaluate_pool.py options]
+            regenerates the multi-key, multi-run tables instead (100 keys x
+            128 runs in REPORT.md); defers entirely to evaluate_pool.py, see
+            that file for the analysis (voting, anchor tiers, runs-required).
 """
 import argparse
 import itertools
@@ -18,7 +22,15 @@ def rule(title):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--traces", help="directory of trace files")
-    args = ap.parse_args()
+    ap.add_argument("--pool", help="quickjs_select_rsa_ps output root; "
+                     "regenerate the key-pool tables instead of the "
+                     "5-trace ones (remaining args are passed through "
+                     "to evaluate_pool.py)")
+    args, pool_extra = ap.parse_known_args()
+    if args.pool:
+        import evaluate_pool
+        sys.argv = [sys.argv[0], "--pool", args.pool, *pool_extra]
+        return evaluate_pool.main()
     if args.traces:
         from pathlib import Path
         D.TRACE_DIR = Path(args.traces)
@@ -28,7 +40,7 @@ def main():
         print(f"No traces found in {D.TRACE_DIR}", file=sys.stderr)
         return 1
 
-    lsb_first = D.load_exponent()
+    lsb_first, _ = D.load_exponent()
     n_bits = len(lsb_first)
     print(f"key: RSA-4096, {n_bits}-bit exponent, {int(lsb_first.sum())} ones")
     try:  # keep output path-independent so it can be diffed against the reference

@@ -7,8 +7,11 @@ set -uo pipefail
 #            -> experiments/ -> SCAR_Artifact
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 BUILD="${ROOT}/build"
-CPUS="${CPUS:-1,3,5,7,9,11,13,15}"
+# CPUS="${CPUS:-1,3,5,7,9,11,13,15}"
+CPUS="${CPUS:-12,14}"
 VICTIM_RUNS="${VICTIM_RUNS:-5}"
+# which libbf cache line(s) to probe: or (default) | and | both
+PROBE_LINE="${PROBE_LINE:-or}"
 ROUND_CYCLES="${ROUND_CYCLES:-4000000000}"
 KEY_ID="${KEY_ID:-0}"
 
@@ -34,8 +37,9 @@ trap cleanup EXIT
 
 sleep 1
 
-echo "== Starting Prime+Scope attacker (VICTIM_RUNS=${VICTIM_RUNS}, KEY_ID=${KEY_ID}) =="
+echo "== Starting Prime+Scope attacker (VICTIM_RUNS=${VICTIM_RUNS}, KEY_ID=${KEY_ID}, PROBE_LINE=${PROBE_LINE}) =="
 VICTIM_RUNS="$VICTIM_RUNS" ROUND_CYCLES="$ROUND_CYCLES" KEY_ID="$KEY_ID" \
+	PROBE_LINE="$PROBE_LINE" \
 	taskset -c "$CPUS" "$ATTACKER_BIN" "$VICTIM_RUNS"
 ATTACKER_STATUS=$?
 

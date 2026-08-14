@@ -47,7 +47,7 @@ def main():
         print(f"FAIL: expected {len(EXPECTED)} traces, found {len(paths)}")
         return 1
 
-    lsb_first = D.load_exponent()
+    lsb_first, _ = D.load_exponent()
     print(f"exponent: {len(lsb_first)} bits, {int(lsb_first.sum())} ones")
     if len(lsb_first) != 4094:
         print("FAIL: exponent is not 4094 bits")

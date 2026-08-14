@@ -19,7 +19,10 @@ analysis/plot_figures.py     the figures as interactive HTML; needs bokeh
 analysis/make_pngs.py        renders each figure to PNG; needs bokeh + playwright
 results/figures_r0.html      interactive figures (pan, zoom, hover)
 results/figures/*.png        static figures, as embedded in EXPLANATION.md
-data/traces/r{0..4}.out.gz   five Prime+Scope traces, one signature each
+data/traces/r{0..4}.out      five Prime+Scope traces of the bf_logic_or line, one
+                            signature each
+data/traces_and_line/       three traces of the bf_logic_and line (PROBE_LINE=and),
+                            for the line-attribution check in the README
 victim/openpgp_select_rsa.js   victim entry point
 victim/openpgp_select_patched.js   OpenPGP.js 5.11.2 with the patch applied
 victim/selectBigInt.mjs      the proposed constant-time selection
@@ -124,28 +127,117 @@ obtained from the traces shipped here. Expect the pair structure of Table 1 to
 hold, correlations to vary between traces as they do in Table 2, and accuracy
 over the lowest 2048 bits to be far above accuracy over all 4094.
 
-### Two constants are specific to the QuickJS build
+### The target is resolved by symbol, not by offset
 
-`quickjs_select_rsa_ps.c` locates its target by adding fixed file offsets to
-the load address of `libquickjs.so`:
+`quickjs_select_rsa_ps.c` used to locate its target by adding hard-coded file
+offsets (`0xb1220`, `0x18da0`) to the load address of `libquickjs.so`. It now
+includes `quickjs/libbf.h` and takes the addresses straight from the linker:
 
 ```c
-static const uintptr_t bf_logic_or_file_offset = 0xb1220;
-static const uintptr_t js_std_eval_file_offset = 0x18da0;
+target_bf_logic_and = (uintptr_t)&bf_logic_and & CACHE_LINE_MASK;
+target_bf_logic_or = (uintptr_t)&bf_logic_or & CACHE_LINE_MASK;
 ```
 
-These are valid only for the QuickJS commit and compiler flags used here.
-Recompute them with `nm` and `addr2line` against your own `libquickjs.so` if
-either changes; wrong offsets produce traces with no structure rather than an
-obvious error.
+`bf_logic_or`/`bf_logic_and`/`bf_rint` are exported by `libquickjs.so`, and the
+attacker links against the same shared object the victim executes from, so these
+are the real loaded addresses and nothing needs recomputing when the QuickJS
+build changes. (`third_party/CMakeLists.txt` copies `libbf.h` into the QuickJS
+install tree; upstream's `install` target ships only three headers.)
+
+What *does* depend on the build is which functions share the target's cache
+line — see below.
+
+### The watched line is not exclusive to `|`
+
+In the current build the libbf logic thunks and `bf_rint` land like this:
+
+```
+0xb1210 bf_rint      \
+0xb1220 bf_logic_or   >  one 64-byte line, base 0xb1200
+0xb1230 bf_logic_xor /
+0xb1240 bf_logic_and     the next line, base 0xb1240
+```
+
+So the "`bf_logic_or` line" also holds `bf_rint`, which `bf_divrem`/`bf_rem`
+call, i.e. every `%` in the modExp loop touches it. Interposing the PLT over one
+RSA-4096 signature of the patched victim counts, per signature:
+
+| symbol | calls | per modExp iteration |
+| --- | --- | --- |
+| `bf_logic_or` | 4,094 | 1 (`SELECT`'s `\|`) |
+| `bf_logic_and` | 12,282 | 3 (`exp & 1n`, `SELECT`'s two `&`) |
+| `bf_logic_xor` | 0 | – |
+| `bf_rint` | 13,305 | ~3.25 (from the `%` operations) |
+
+`bf_rint` + `bf_logic_or` = 17,399, and that is what the ~17,000-record traces
+are: the ~4.1 records per `SELECT` call are ~1 `bf_logic_or` plus ~3.25
+`bf_rint`, not four accesses to `bf_logic_or`. They are *not* `bf_logic_and`
+traces — a probe cannot record more events (17,074 in `r0`) than there are calls
+(12,282) — and `bf_logic_and` cannot bleed into them either: its line differs in
+address bit 6, which is part of the LLC set index, so it is a different set.
+
+Measured confirmation, three fresh runs each (`VICTIM_RUNS=3`):
+
+| `PROBE_LINE` | records/trace | expected calls | ratio |
+| --- | --- | --- | --- |
+| `or` (default) | 16,970 / 17,302 / 16,473 | 17,399 | 0.95–0.99 |
+| `and` | 12,596 / 12,450 / 12,458 | 12,282 | 1.01–1.03 |
+
+### Which of the four accesses per iteration is which
+
+Timestamping the victim's own `bf_rint`/`bf_logic_and`/`bf_logic_or` calls shows an
+invariant 7-call loop body, `and(exp&1n) rint(shift) rint(r*x%n) and and or
+rint(x*x%n)`. Four of those are on the watched line, giving the observed two
+pairs per iteration separated by the two ~278k-cycle modular multiplications:
+
+| pair | endpoints | gap, bit=0 | gap, bit=1 | 1-threshold accuracy |
+| --- | --- | --- | --- | --- |
+| wide | `rint(r*x%n)` -> `or` (all of `SELECT`) | 29,608 | 32,164 | 0.993 |
+| narrow | `rint(x*x%n)` -> next `rint(shift)` (the exponent shift) | 25,282 | 25,374 | 0.585 |
+| (inside wide) | `SELECT`'s first `&` -> second `&` | 3,430 | 4,759 | 0.998 |
+
+So the decoder's median split isolates the `SELECT` pair. The leak within it is
+*not* `SELECT`'s two `bf_logic_and` calls: per-handler timing on an instrumented
+QuickJS (`openpgp_patch/run_opcode_timing.sh`, 10 runs at `maxBitLength=4096`)
+puts the `and` pair at +16 cycles and the `or` at -36, against **+1,422 for the
+`add`** in `mask - _1n + cond`. `cond = 0n` is a BigInt of length 0, which
+`bf_add_internal` short-circuits at `libbf.c:908`; `cond = 1n` runs the full
+64-limb add and carries out the top, forcing a second `bf_resize`. Intel PT
+localizes the divergence to that one branch (`bf_add_internal+0x26a`). The `+`
+sits between `SELECT`'s two `&` calls, which is why the interval above separates.
+See `EXPLANATION.md` §4 and `EXPLANATION_AND.md` §4.1. (The absolute figures in
+the last row come from an LD_PRELOAD interposer whose per-call overhead is
+comparable to that short interval; the delta agrees with the handler timing, the
+endpoints are inflated.)
+
+The gaps above are measured inside the victim, but the Prime+Scope trace
+reproduces the same four intervals from the outside (`python3 analysis/figures.py`,
+figure 0, r0):
+
+| interval | measured in the trace | instrumented victim | delta |
+| --- | --- | --- | --- |
+| `rint(shift)` -> `rint(r*x%n)` (multiply) | 277,590 | 277,734 | -144 |
+| `rint(r*x%n)` -> `or` (**wide pair**) | 29,620 | 30,726 | -1,106 |
+| `or` -> `rint(x*x%n)` (square) | 278,664 | 278,880 | -216 |
+| `rint(x*x%n)` -> next `rint(shift)` (**narrow pair**) | 25,564 | 25,326 | +238 |
+| loop period | 611,438 | 612,666 | -1,228 |
+
+Even the ~1,100-cycle asymmetry between the multiply and the square survives, so
+which pair follows which multiplication is fixed by the trace itself rather than
+assumed from the source order.
+
+`PROBE_LINE=both` probes both lines at once, but the two Prime+Scope threads
+contend badly — one starves the other per round (12,246 vs 667 in one round,
+342 vs 9,690 in the next) — so compare the lines across two single-probe runs.
 
 ## Reading the trace files
 
 One line per probe record. Columns are whitespace separated, each `tsc:latency`.
-The attacker probes one cache line, `bf_logic_or`, so traces have a single
-column. The traces in `data/traces` predate that and carry a second probe,
-`bf_add_internal`, in column 0; it was dropped as redundant (see
-"Why only one probe" below), and the signal is the last column either way.
+By default the attacker probes one cache line, so traces have a single column.
+Older traces in `data/traces` carry a dropped `bf_add_internal` probe in column
+0, and `decoder.py` therefore takes the *last* column. Note the exception:
+under `PROBE_LINE=both` the last column is `bf_logic_and`, so pass
+`load_trace(path, slot=0)` explicitly to decode the `bf_logic_or` signal.
 A timestamp of 0 means no record. `analysis/decoder.py:load_trace` parses this
 in 20 lines if you want to write your own analysis.
 
@@ -165,7 +257,7 @@ and one eviction set smaller.
 ## Limitations
 
 Stated in full at the end of REPORT.md. In short: one key and five traces; two
-of the five (r2, r4) are close to chance over the whole exponent; the mapping
-from the 4.1 recorded accesses per call to SELECT's three calls into
-`bf_logic_op` is not established; and the lattice step that would turn the
+of the five (r2, r4) are close to chance over the whole exponent; the ~700-cycle
+gap between the instrumented cost of the leak (~+1,450) and what the traces show
+(~+2,200) is unexplained; and the lattice step that would turn the
 recovered low half of `d` into the full key is cited, not run.

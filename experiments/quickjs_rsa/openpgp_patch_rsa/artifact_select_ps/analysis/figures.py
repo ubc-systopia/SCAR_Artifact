@@ -20,13 +20,108 @@ def enrich(path):
     """
     res = D.decode(path)
     ts, _ = D.load_trace(path)
-    lsb_first = D.load_exponent()
+    lsb_first, _ = D.load_exponent()
     start_t, wide_gap, _, _ = D.wide_narrow(ts)
     idx, valid, _ = D.assign_indices(start_t, len(lsb_first),
                                      anchor=res["anchor"])
     res.update(wide_start=start_t, wide_gap=wide_gap,
                idx=idx, valid=valid, lsb_first=lsb_first)
     return res
+
+
+# Median cycle counts between consecutive libbf calls in the victim, measured by
+# timestamping bf_rint/bf_logic_and/bf_logic_or through the PLT with an
+# LD_PRELOAD shim (see README, "Which of the four accesses per iteration is
+# which"). Ground truth for what the pairs below are, not used to compute them.
+INSTRUMENTED = {
+    "multiply": 277_734,   # rint(exp>>=1n) -> rint(r*x % n)
+    "wide": 30_726,        # rint(r*x % n)  -> or   (all of SELECT)
+    "square": 278_880,     # or             -> rint(x*x % n)
+    "narrow": 25_326,      # rint(x*x % n)  -> rint(exp>>=1n) of the next pass
+}
+
+
+def anatomy(ts):
+    """Figure 0: name every access in a loop iteration, and check the naming.
+
+    The victim's loop body is an invariant seven libbf calls,
+
+        and(exp & 1n)  rint(exp >>= 1n)  rint(r*x % n)  and  and  or  rint(x*x % n)
+
+    of which the three bf_logic_and are on a different cache line and a
+    different LLC set. The four that remain are what the trace holds, and their
+    spacing identifies them: the two ~278,000-cycle gaps are the multiply and
+    the square, and the two pairs sit on either side of them.
+    """
+    lo, hi = D.signing_window(ts)
+    t = ts[(ts >= lo) & (ts <= hi)]
+    gaps = np.diff(t)
+
+    starts = np.concatenate(([0], np.where(gaps >= D.PAIR_SPLIT_CYCLES)[0] + 1))
+    ends = np.concatenate((starts[1:] - 1, [len(t) - 1]))
+    two = (ends - starts) == 1
+    pair_start, pair_end = t[starts[two]], t[ends[two]]
+    inner = (pair_end - pair_start).astype(float)
+    wide = inner > np.median(inner)
+
+    # Gap from the end of one pair to the start of the next, split by which
+    # kind of pair it follows. Long tails are trace dropouts, not iterations.
+    between = (pair_start[1:] - pair_end[:-1]).astype(float)
+    sane = between < 400_000
+    after_wide = between[wide[:-1] & sane]
+    after_narrow = between[~wide[:-1] & sane]
+
+    measured = {
+        "multiply": np.median(after_narrow),
+        "wide": np.median(inner[wide]),
+        "square": np.median(after_wide),
+        "narrow": np.median(inner[~wide]),
+    }
+
+    print("FIGURE 0  anatomy of one loop iteration")
+    print("  (not to scale; the two long gaps are ~9x the width drawn)")
+    print()
+
+    cols = (7, 21, 34, 48, 62)
+    names = ("rint", "rint", "or", "rint", "rint")
+    what = ("exp >>= 1n", "r*x % n", "SELECT |", "x*x % n", "exp >>= 1n")
+    spans = ("multiply", "WIDE", "square", "narrow")
+
+    def place(items, positions):
+        row = [" "] * 76
+        for text, c in zip(items, positions):
+            row[c:c + len(text)] = text
+        return "  " + "".join(row).rstrip()
+
+    def bracket(label, a, b):
+        inner = b - a - 1
+        pad = inner - len(label) - 4
+        left = pad // 2
+        return "|<-" + " " * left + label + " " * (pad - left) + "->"
+
+    print(place(names, cols))
+    print(place(what, cols))
+    print(place(["|"] * 5, cols))
+    rule = ["-"] * 76
+    for c in cols:
+        rule[c] = "+"
+    print("  " + "".join(rule))
+    print(place([bracket(s_, a, b) for s_, a, b in
+                 zip(spans, cols, cols[1:])] + ["|"], cols))
+    print(place(["= the bit", "= no signal"], (cols[1] + 3, cols[3] + 2)))
+    print()
+    print("  interval      measured      instrumented victim      delta")
+    for k in ("multiply", "wide", "square", "narrow"):
+        d = measured[k] - INSTRUMENTED[k]
+        print(f"  {k:<12}{measured[k]:>10,.0f}{INSTRUMENTED[k]:>22,.0f}{d:>+11,.0f}")
+    tot_m = sum(measured.values())
+    tot_i = sum(INSTRUMENTED.values())
+    print(f"  {'loop period':<12}{tot_m:>10,.0f}{tot_i:>22,.0f}{tot_m - tot_i:>+11,.0f}")
+    print()
+    print("  The multiply/square asymmetry (~1,100 cycles) is visible in the trace")
+    print("  alone, so which pair follows which multiplication is fixed by the")
+    print("  measurement and not assumed.")
+    print()
 
 
 def timeline(ts):
@@ -211,6 +306,7 @@ def main():
     print(f"# figures for {path.name}\n")
 
     ts, _ = D.load_trace(path)
+    anatomy(ts)
     timeline(ts)
 
     res = enrich(path)
