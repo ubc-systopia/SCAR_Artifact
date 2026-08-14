@@ -229,17 +229,99 @@ The `|` itself is exclusive: in the patched signing code, the only place a `|` b
 two big numbers happens is inside `SELECT`. The *cache line* is not, and this is worth
 being precise about, because it explains a number that used to be unaccounted for. A
 cache line is 64 bytes, and in this build `bf_rint` sits 16 bytes before `bf_logic_or`,
-on the same line. `bf_rint` is called from the division routine, so every `%` in the
-loop touches the line too. Counting the actual calls in one signature: `bf_logic_or`
+on the same line, so every call to `bf_rint` shows up in the trace as if it were a call
+to `bf_logic_or`. Counting the actual calls in one signature: `bf_logic_or`
 fires 4,094 times (once per iteration, as expected) and `bf_rint` 13,305 times (~3.25
 per iteration). Their sum, 17,399, is what the ~17,000-record traces are made of. So
-what the attacker watches is "SELECT's `|`, plus the loop's divisions" — every access
-still comes from inside the modExp loop, but not all of them from `SELECT`.
+what the attacker watches is "SELECT's `|`, plus whatever calls `bf_rint`" — and it
+turns out that what calls `bf_rint` is also inside the modExp loop, three times per
+iteration, which is why the trace has usable structure at all.
 
 (The two `&` operations inside `SELECT` go to `bf_logic_and`, which lands on the *next*
 cache line and in a different cache set, so it is not part of this signal at all. A
 separate run that watches that line instead records ~12,500 events, matching its 12,282
 calls.)
+
+### 5.1 What `bf_rint` is, and why it fires three times an iteration
+
+`bf_rint` means **round to integer**. It is a one-liner (`libbf.c:2323`):
+
+```c
+/* convert to integer (infinite precision) */
+int bf_rint(bf_t *r, int rnd_mode)
+{
+    return bf_round(r, 0, rnd_mode | BF_FLAG_RADPNT_PREC);
+}
+```
+
+It throws away everything below the radix point and keeps every integer bit
+(`BF_FLAG_RADPNT_PREC` is what makes the precision "however many bits the integer part
+needs" rather than a fixed width).
+
+Why would code that only ever handles integers need to round? Because **`libbf` is a
+floating-point library**, not an integer one. A `bf_t` is a sign, a binary exponent and
+a mantissa; JavaScript's `BigInt` is layered on top of it by keeping the values integral
+by hand. Any primitive that could introduce a fractional part therefore has to be
+followed by an explicit re-integerisation step, and `bf_rint` is that step. It is
+plumbing — it does no arithmetic the JavaScript programmer asked for, which is exactly
+why nobody reading `SELECT` would think to look at the cache line it lives on.
+
+Two operations in the modExp loop reach it, for entirely different reasons:
+
+**1. The shift, `exp >>= 1n` — one call.** QuickJS lowers `>>` on BigInts to a multiply
+by a power of two (`quickjs.c:13272`):
+
+```c
+case OP_sar:
+    ...
+    if (op == OP_sar)
+        v2 = -v2;                                  /* >> 1  becomes  * 2^-1 */
+    ret = bf_set(r, a);
+    ret |= bf_mul_2exp(r, v2, BF_PREC_INF, BF_RNDZ);
+    if (v2 < 0) {
+        ret |= bf_rint(r, BF_RNDD) & ...;          /* floor away the new fraction */
+    }
+```
+
+`bf_mul_2exp` by a negative amount just decrements the exponent field — it does not
+touch the mantissa, so shifting an odd number right by one leaves a value ending in
+`.5`. `bf_rint` with `BF_RNDD` (round down) discards that half, which is what makes
+`>>` behave like an arithmetic shift instead of a division. One call, unconditionally,
+per shift.
+
+**2. Each `%` — one call.** `%` on BigInts goes to `bf_rem` → `bf_divrem` →
+`bf_tdivremu` (`libbf.c:2319`), which computes a remainder the roundabout way: divide,
+floor the quotient, multiply back, subtract.
+
+```c
+static void bf_tdivremu(bf_t *q, bf_t *r, const bf_t *a, const bf_t *b)
+{
+    if (bf_cmpu(a, b) < 0) {
+        bf_set_ui(q, 0);            /* a < b: remainder is a, no rounding needed */
+        bf_set(r, a);
+    } else {
+        bf_div(q, a, b, ...);       /* a fractional quotient */
+        bf_rint(q, BF_RNDZ);        /* -> floor(a/b) */
+        bf_mul(r, q, b, ...);
+        bf_sub(r, a, r, ...);       /* r = a - floor(a/b)*b */
+    }
+}
+```
+
+The `bf_rint` is what turns the floating-point quotient into the integer `floor(a/b)`.
+It is skipped when the dividend is smaller than the modulus — but in `modExp` the
+dividend is a product of two residues and the modulus is `n`, so that branch is
+essentially never taken.
+
+The loop body does one shift and two `%` (`rx = (r*x) % n` and `x = (x*x) % n`), so
+**three `bf_rint` calls per iteration**: 3 × 4,094 = 12,282. The measured 13,305 leaves
+about 1,000 calls (8%) from outside the loop — signature setup and encoding — which are
+not attributed here and do not fall inside the signing window the decoder uses.
+
+This is what makes the attack work. The `%` calls sit immediately before and after
+`SELECT` in the loop body, so `bf_rint` gives the attacker a tick on *both* sides of it,
+on the same cache line as the `|` that closes it. The co-tenancy that at first looks
+like contamination is what supplies the start marker.
 
 That one line is all the attacker watches. An earlier version of this attack also
 watched `bf_add_internal` as a control — a line that fires constantly from the
@@ -324,7 +406,7 @@ deviation in the steady state:
 | call | source line |
 | --- | --- |
 | `bf_logic_and` | `const lsb = exp & 1n` |
-| `bf_rint` | `exp >>= 1n` (the shift is lowered to a rounded multiply by a power of two) |
+| `bf_rint` | `exp >>= 1n` (the shift becomes a multiply by `2^-1` plus a floor — §5.1) |
 | `bf_rint` | the `%` in `rx = (r * x) % n` |
 | `bf_logic_and` | `SELECT`'s `a & (mask - cond)` |
 | `bf_logic_and` | `SELECT`'s `b & (mask - 1n + cond)` |
