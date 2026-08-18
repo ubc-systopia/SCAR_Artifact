@@ -34,23 +34,32 @@ add_custom_target(cpython DEPENDS ${CPYTHON_SHARED_LIB})
 # LLCFeasible
 add_subdirectory(LLCFeasible)
 
-# V8
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/v8")
+# ---------- V8 ----------
+
+set(V8_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/v8" CACHE FILEPATH "V8 source directory")
+set(V8_DEPOT_TOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/depot_tools" CACHE FILEPATH "depot_tools directory")
+set(V8_GIT_REF "13.1-lkgr" CACHE STRING "V8 tag/branch to check out")
+set(V8_OUT_SUBDIR "out.gn/x64.release" CACHE STRING "V8 build directory, relative to V8_SRC_DIR")
+set(V8_OUT_DIR "${V8_SRC_DIR}/${V8_OUT_SUBDIR}" CACHE INTERNAL "V8 build directory (absolute)")
+
+set(V8_NINJA_TARGETS v8_monolith v8_libbase v8_libplatform)
+
+if(NOT EXISTS "${V8_SRC_DIR}")
     message("Fetching V8...")
     execute_process(
-            COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} fetch v8
+            COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} fetch v8
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     message("Checking out target commit...")
     execute_process(
-            COMMAND git checkout 13.1-lkgr
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+            COMMAND git checkout ${V8_GIT_REF}
+            WORKING_DIRECTORY ${V8_SRC_DIR})
     message("Syncing V8...")
     execute_process(
-            COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} gclient sync -D
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+            COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} gclient sync -D
+            WORKING_DIRECTORY ${V8_SRC_DIR})
 endif()
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_monolith.a")
+if(NOT EXISTS "${V8_OUT_DIR}/build.ninja")
     message("Configuring V8...")
     set(GN_ARGS "
     dcheck_always_on = false
@@ -58,35 +67,41 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_monolit
     use_custom_libcxx = false
     v8_monolithic = true
     v8_use_external_startup_data = false
-    is_debug = true
-    symbol_level = 2
+    is_debug = false
     target_cpu = \"x64\"
-    v8_enable_debugging_features = true
-    v8_enable_backtrace = true
-    v8_enable_fast_mksnapshot = true
-    v8_enable_slow_dchecks = true
-    v8_optimized_debug = false
-    v8_expose_symbols = true
-    v8_symbol_level = 2
-    cppgc_enable_object_names = true
-    v8_enable_disassembler = true
-    v8_enable_gdbjit = true
+    v8_enable_backtrace = false
+    symbol_level = 0
     ")
     string(REPLACE "\n" " " GN_ARGS "${GN_ARGS}")
     execute_process(
-            COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} gn gen out.gn/x64.debug --args=${GN_ARGS}
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+            COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} gn gen ${V8_OUT_SUBDIR} --args=${GN_ARGS}
+            WORKING_DIRECTORY ${V8_SRC_DIR})
 endif()
 
 set(V8_STATIC_LIB
-	"${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_monolith.a"
-	"${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_libbase.a"
-	"${CMAKE_CURRENT_SOURCE_DIR}/v8/out.gn/x64.debug/obj/libv8_libplatform.a"
-	CACHE FILEPATH "V8 static libraries")
+	"${V8_OUT_DIR}/obj/libv8_monolith.a"
+	"${V8_OUT_DIR}/obj/libv8_libbase.a"
+	"${V8_OUT_DIR}/obj/libv8_libplatform.a"
+	CACHE INTERNAL "V8 static libraries")
 
-add_custom_command(
-        OUTPUT ${V8_STATIC_LIB}
-        COMMAND ${CMAKE_COMMAND} -E env PATH=${CMAKE_CURRENT_SOURCE_DIR}/depot_tools:$ENV{PATH} ninja -C out.gn/x64.debug
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/v8)
+set(V8_MISSING_LIBS "")
+foreach(lib IN LISTS V8_STATIC_LIB)
+    if(NOT EXISTS "${lib}")
+        list(APPEND V8_MISSING_LIBS "${lib}")
+    endif()
+endforeach()
 
-add_custom_target(v8 DEPENDS ${V8_STATIC_LIB})
+if(V8_MISSING_LIBS)
+    message("Building V8 (missing: ${V8_MISSING_LIBS})")
+    add_custom_command(
+            OUTPUT ${V8_STATIC_LIB}
+            COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} ninja -C ${V8_OUT_SUBDIR} ${V8_NINJA_TARGETS}
+            WORKING_DIRECTORY ${V8_SRC_DIR}
+            COMMENT "Building V8 static libs: ${V8_NINJA_TARGETS}"
+            USES_TERMINAL
+            VERBATIM)
+
+    add_custom_target(v8 DEPENDS ${V8_STATIC_LIB})
+else()
+    add_custom_target(v8)
+endif()

@@ -1,9 +1,11 @@
+#include <cstdio>
+
 #include "v8_runtime.h"
 
 int main(int argc, char *argv[]) {
-	if (argc < 4) {
+	if (argc < 3) {
 		fprintf(stderr,
-		        "Usage: %s <source.js> <repeat.js> <keypair_template.js>\n",
+		        "Usage: %s <source.js> <repeat.js> [keypair_template.js]\n",
 		        argv[0]);
 		return 1;
 	}

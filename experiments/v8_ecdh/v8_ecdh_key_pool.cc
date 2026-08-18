@@ -554,9 +554,26 @@ int v8_ecdh_thread_main(int argc, char *argv[]) {
 			        memcmp(event->name.str, target, event->name.len) == 0) {
 				    jit_machine_code =
 				        reinterpret_cast<uintptr_t>(event->code_start);
+				    /* code_len matters when changing V8 build config: the
+				     * branch offsets below are absolute byte offsets into
+				     * this generated code, and a debug build injects extra
+				     * assertion code (--debug-code) that a release build does
+				     * not -- so an offset valid on one can fall outside, or
+				     * mid-instruction, on the other. */
 				    log_info(LOG_BOLD_ON
-				             "Get target address to %p" LOG_BOLD_OFF,
-				             jit_machine_code);
+				             "Get target address to %p (code_len=%zu, "
+				             "false_off=0x%lx true_off=0x%lx)" LOG_BOLD_OFF,
+				             jit_machine_code,
+				             event->code_len,
+				             ecdh_false_branch_offset,
+				             ecdh_true_branch_offset);
+				    if (ecdh_false_branch_offset >= event->code_len ||
+				        ecdh_true_branch_offset >= event->code_len) {
+					    log_error("branch offsets fall OUTSIDE mul()'s "
+					              "generated code (len %zu) -- they must be "
+					              "re-derived for this V8 build",
+					              event->code_len);
+				    }
 			    }
 		    });
 

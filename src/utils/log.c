@@ -200,7 +200,7 @@ void log_fmt(int level, const char *file, int line, const char *fmt, ...) {
     log_get_time_info(time_info);
 
     va_start(args, fmt);
-    vsprintf(buffer, fmt, args);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
 
     fprintf(stdout, "%s %s[%5s] %s:%-3d: %s%s" LOG_COLOR_RESET "\n", time_info,

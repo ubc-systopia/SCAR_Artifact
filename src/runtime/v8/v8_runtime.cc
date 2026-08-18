@@ -5,6 +5,7 @@ extern "C" {
 #include "arch.h"
 #include "shared_memory.h"
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "fs.h"
@@ -180,13 +181,112 @@ void Rdtscp(const v8::FunctionCallbackInfo<v8::Value> &info) {
 	info.GetReturnValue().Set(tsc);
 }
 
+/* Match a tag-prefixed JIT event name ("BytecodeHandler:NegateHandler") against
+ * a bare builtin name: strip through the first ':' then compare exactly so
+ * "NegateHandler" does not also catch "NegateWideHandler". */
+static bool jit_name_is(const v8::JitCodeEvent *event, const char *base) {
+	const char *s = event->name.str;
+	size_t len = event->name.len;
+	for (size_t i = 0; i < len; ++i) {
+		if (s[i] == ':') {
+			s += i + 1;
+			len -= i + 1;
+			break;
+		}
+	}
+	size_t blen = strlen(base);
+	return len == blen && memcmp(s, base, blen) == 0;
+}
+
+/* The bundles used here are self-contained (no imports); fail loudly if a
+ * module tries to import a specifier. */
+static v8::MaybeLocal<v8::Module> v8_resolve_module(
+    v8::Local<v8::Context> context,
+    v8::Local<v8::String> specifier,
+    v8::Local<v8::FixedArray> import_attributes,
+    v8::Local<v8::Module> referrer) {
+	(void)specifier;
+	(void)import_attributes;
+	(void)referrer;
+	context->GetIsolate()->ThrowError(
+	    "module imports are not supported by this embedder");
+	return v8::MaybeLocal<v8::Module>();
+}
+
+/* Compile/instantiate/evaluate <source_str> as an ES module and return its
+ * module namespace object (the bag of exports). */
+static v8::MaybeLocal<v8::Value> v8_eval_module(v8::Local<v8::Context> context,
+                                                const char *name,
+                                                const char *source_str) {
+	v8::Isolate *isolate = context->GetIsolate();
+	v8::Local<v8::String> source =
+	    v8::String::NewFromUtf8(isolate, source_str).ToLocalChecked();
+	v8::ScriptOrigin origin(
+	    v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+	    0,
+	    0,
+	    false,
+	    -1,
+	    v8::Local<v8::Value>(),
+	    false,
+	    false,
+	    true /* is_module */);
+	v8::ScriptCompiler::Source module_source(source, origin);
+	v8::Local<v8::Module> module;
+	if (!v8::ScriptCompiler::CompileModule(isolate, &module_source)
+	         .ToLocal(&module)) {
+		return {};
+	}
+	if (module->InstantiateModule(context, v8_resolve_module).IsNothing()) {
+		return {};
+	}
+	v8::Local<v8::Value> result;
+	if (!module->Evaluate(context).ToLocal(&result)) {
+		return {};
+	}
+	isolate->PerformMicrotaskCheckpoint();
+	return module->GetModuleNamespace();
+}
+
 void v8_run_loop(int argc, char *argv[]) {
 	reset_sync_ctx(V8_PROJ_ID);
 
+	/* Echo the parsed arguments; if the JS paths are missing (e.g. a broken
+	 * shell line-continuation) this immediately shows argv[1..3] are flags. */
+	log_info("v8_run_loop argc=%d source=%s repeat=%s template=%s",
+	         argc,
+	         argc > 1 ? argv[1] : "(none)",
+	         argc > 2 ? argv[2] : "(none)",
+	         argc > 3 ? argv[3] : "(none)");
+
 	const char *source_str = read_file(argv[1]);
+	if (!source_str) {
+		log_error("cannot read source script '%s' (arg 1) -- is the path right "
+		          "and passed before any --flags?",
+		          argv[1] ? argv[1] : "(null)");
+		return;
+	}
 	const char *repeat_str = read_file(argv[2]);
-	const char *set_keypair_template = read_file(argv[3]);
+	if (!repeat_str) {
+		log_error("cannot read repeat script '%s' (arg 2)",
+		          argv[2] ? argv[2] : "(null)");
+		return;
+	}
+	/* argv[3] (SET_KEY template) is optional: a pure profiling run that never
+	 * issues SYNC_CTX_SET_KEY does not need it. */
+	const char *set_keypair_template = nullptr;
+	if (argc > 3) {
+		set_keypair_template = read_file(argv[3]);
+		if (!set_keypair_template) {
+			log_error("cannot read set-keypair template '%s' (arg 3)", argv[3]);
+			return;
+		}
+	}
 	static uintptr_t jit_machine_code;
+	/* Bytecode-handler builtins for the V8 constant-time-select victim; stay 0
+	 * for other victims. Published alongside jit_machine_code. */
+	static uintptr_t addr_negate;
+	static uintptr_t addr_bitand;
 
 	v8::V8::InitializeICUDefaultLocation(argv[0]);
 	v8::V8::SetFlagsFromCommandLine(&argc, argv, true);
@@ -199,12 +299,33 @@ void v8_run_loop(int argc, char *argv[]) {
 	    v8::ArrayBuffer::Allocator::NewDefaultAllocator();
 	v8::Isolate *isolate = v8::Isolate::New(create_params);
 	{
+		v8::Isolate::Scope iscope(isolate);
+		v8::HandleScope scope(isolate);
+		v8::TryCatch try_catch(isolate);
+
+		/* Must run inside Isolate::Scope: the enum-existing pass walks the heap
+		 * and needs a LocalHeap, else a debug CHECK (isolate.cc) fires. */
 		isolate->SetJitCodeEventHandler(
-		    v8::kJitCodeEventDefault, [](const v8::JitCodeEvent *event) {
+		    static_cast<v8::JitCodeEventOptions>(
+		        v8::kJitCodeEventDefault | v8::kJitCodeEventEnumExisting),
+		    [](const v8::JitCodeEvent *event) {
 			    if (event->type != v8::JitCodeEvent::CODE_ADDED)
 				    return;
 			    if (event->code_type != v8::JitCodeEvent::JIT_CODE)
 				    return;
+			    /* Bytecode-handler builtins have an empty script and load at
+			     * isolate creation, so they arrive via the enum-existing pass;
+			     * resolve them for the constant-time-select victim. */
+			    if (jit_name_is(event, "NegateHandler")) {
+				    addr_negate =
+				        reinterpret_cast<uintptr_t>(event->code_start);
+				    return;
+			    }
+			    if (jit_name_is(event, "BitwiseAndSmiWideHandler")) {
+				    addr_bitand =
+				        reinterpret_cast<uintptr_t>(event->code_start);
+				    return;
+			    }
 			    if (event->script.IsEmpty())
 				    return;
 			    log_debug("JIT event %.*s: code_start=%p len=%zu",
@@ -223,10 +344,6 @@ void v8_run_loop(int argc, char *argv[]) {
 			    }
 		    });
 
-		v8::Isolate::Scope iscope(isolate);
-		v8::HandleScope scope(isolate);
-		v8::TryCatch try_catch(isolate);
-
 		v8::Local<v8::ObjectTemplate> global = v8::ObjectTemplate::New(isolate);
 		global->Set(
 		    isolate, "rdtscp", v8::FunctionTemplate::New(isolate, Rdtscp));
@@ -241,12 +358,30 @@ void v8_run_loop(int argc, char *argv[]) {
 		v8::Context::Scope cscope(context);
 
 		log_info("V8 runtime load script");
-		v8::Local<v8::String> source =
-		    v8::String::NewFromUtf8(isolate, source_str).ToLocalChecked();
-		v8::Script::Compile(context, source)
-		    .ToLocalChecked()
-		    ->Run(context)
-		    .ToLocalChecked();
+		if (getenv("V8_MODULE_SOURCE")) {
+			/* The source is an ES module (e.g. the bundled openpgp used by the
+			 * constant-time-select victim): evaluate it and expose its exports
+			 * as the `openpgp` global so a classic repeat script reaches them. */
+			v8::Local<v8::Value> ns;
+			if (!v8_eval_module(context, "module_source", source_str)
+			         .ToLocal(&ns)) {
+				ReportException(isolate, &try_catch);
+				log_error("failed to evaluate module source");
+			} else {
+				context->Global()
+				    ->Set(context,
+				          v8::String::NewFromUtf8Literal(isolate, "openpgp"),
+				          ns)
+				    .Check();
+			}
+		} else {
+			v8::Local<v8::String> source =
+			    v8::String::NewFromUtf8(isolate, source_str).ToLocalChecked();
+			v8::Script::Compile(context, source)
+			    .ToLocalChecked()
+			    ->Run(context)
+			    .ToLocalChecked();
+		}
 
 		v8::Local<v8::String> repeat_src =
 		    v8::String::NewFromUtf8(isolate, repeat_str).ToLocalChecked();
@@ -257,14 +392,27 @@ void v8_run_loop(int argc, char *argv[]) {
 		        .ToLocalChecked();
 		v8::Local<v8::Function> repeat_func = repeat_result.As<v8::Function>();
 
-		log_info("V8 runtime JIT warmup");
-		for (int i = 0; i < 1000; ++i)
+		/* Default 1000 tiers up a fast victim (ecdh derive). Override via
+		 * V8_WARMUP for a slow one: each CT warmup iteration is a full ~8s RSA
+		 * sign, so 1000 would take hours -- a handful suffices to tier up the
+		 * modexp under --always-turbofan while select stays interpreted. */
+		int warmup_iters = getenv("V8_WARMUP") ? atoi(getenv("V8_WARMUP")) : 1000;
+		log_info("V8 runtime JIT warmup (%d iters)", warmup_iters);
+		for (int i = 0; i < warmup_iters; ++i) {
 			repeat_func->Call(context, context->Global(), 0, nullptr)
 			    .ToLocalChecked();
+			/* Drain the microtask queue so async victims (e.g. the openpgp
+			 * sign) actually run to completion; a no-op for sync victims. */
+			isolate->PerformMicrotaskCheckpoint();
+		}
 
-		memcpy(sync_ctx.data, &jit_machine_code, sizeof(jit_machine_code));
+		uintptr_t published[3] = { jit_machine_code, addr_negate, addr_bitand };
+		memcpy(sync_ctx.data, published, sizeof(published));
 
-		log_info("Pass jit code start %p", ((uintptr_t *)sync_ctx.data)[0]);
+		log_info("Pass jit code start %p (negate=%p bitand=%p)",
+		         (void *)jit_machine_code,
+		         (void *)addr_negate,
+		         (void *)addr_bitand);
 
 		log_info("V8 runtime ready");
 		pthread_barrier_wait(sync_ctx.barrier); /* #1: init done */
@@ -279,7 +427,10 @@ void v8_run_loop(int argc, char *argv[]) {
 				break;
 			} else if (action == SYNC_CTX_START) {
 				repeat_func->Call(context, context->Global(), 0, nullptr);
-			} else if (action == SYNC_CTX_SET_KEY) {
+				/* Run the async body (openpgp sign) to completion inside the
+				 * profiling window; no-op for sync victims (ecdh derive). */
+				isolate->PerformMicrotaskCheckpoint();
+			} else if (action == SYNC_CTX_SET_KEY && set_keypair_template) {
 				char key_str[4096];
 				snprintf(key_str,
 				         sizeof(key_str),

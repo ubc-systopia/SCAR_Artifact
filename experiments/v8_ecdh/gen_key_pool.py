@@ -30,10 +30,12 @@ from argparse import ArgumentParser
 # curve25519 private keys are 32 bytes.
 KEY_BYTES = 32
 
+CURVE25519_N = 2 ** 252 + 27742317777372353535851937790883648493
 
 def gen_scalar():
-    """Random 32-byte scalar as byte-aligned hex with leading zero bytes stripped."""
-    raw = secrets.token_bytes(KEY_BYTES)
+    """Random scalar in [1, n) as byte-aligned hex with leading zero bytes stripped."""
+    value = secrets.randbelow(CURVE25519_N - 1) + 1
+    raw = value.to_bytes(KEY_BYTES, "big")
     # Strip leading zero bytes (keep byte alignment) but never produce an empty string.
     stripped = raw.lstrip(b"\x00") or b"\x00"
     return stripped.hex()
