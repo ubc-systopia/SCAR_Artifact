@@ -163,7 +163,7 @@ var elliptic = (function () {
 						throw new Error("wordlength mismatch");
 					}
 					function selectWordsInPlace(cond, lw, rw){
-						BN.selectArray(cond, lw,rw);
+						BN.selectArray(cond, lw, rw);
 						return lw;
 					}
 

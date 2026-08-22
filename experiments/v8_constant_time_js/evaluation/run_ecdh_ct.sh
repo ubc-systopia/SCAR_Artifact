@@ -1,58 +1,47 @@
 #!/usr/bin/env bash
-# Capture v8_ctjs_ecdh traces for one or more ECDH scalars and file each
-# capture under its own directory.
+# Capture v8_ctjs_ecdh traces for one or more ECDH scalars, one directory per
+# capture (the attacker always dumps to the same path, so back-to-back captures
+# would otherwise overwrite each other).
 #
 #   usage: run_ecdh_ct.sh [-fr|-pp] [attacker-flags...] <key-name>...
 #          run_ecdh_ct.sh -fr zeros ones alt 0 1 2
 #          RUNS=40 run_ecdh_ct.sh -cl0=xw:0x240:0 7
 #
-# <key-name> is either an INDEX into the shared EC key pool
-# (experiments/v8_ecdh/ec_key_pool/ec_key_<i>.json, the same {key1,key2} pairs
-# the non-CT v8_ecdh case study draws from -- $POOL, regenerate/extend with
-# v8_ecdh/gen_key_pool.py) or the suffix of a crafted raw-hex scalar,
-# experiments/v8_constant_time_js/ec_key_<name>.hex, for the patterns a random
-# pool has no reason to carry (zeros, ones, alt). Pool captures are filed under
-# k<i> so a bare index never names a directory.
+# <key-name> is an index into the shared pool ($POOL/ec_key_<i>.json, filed
+# under k<i>) or the suffix of a crafted scalar, ec_key_<name>.hex.
 #
-# The per-key directory is needed because dump_profiling_traces always writes to the same path
-# (output/v8_ctjs_ecdh_r<runs>), so back-to-back captures would overwrite each
-# other; each finished capture is moved to output/<prim>_<key>_r<runs>/ and the
-# `channels` metadata the attacker wrote travels with it, which is what lets
-# extract_v8_ct_ecdh.py configure itself per capture.
-#
-# Env: BIN, BUILD, CPUS (taskset list -- keep the victim and the attacker on
-# the same socket, node1 odd CPUs on leapx02), RUNS, WARMUP, TAG (extra label
-# in the capture directory name, e.g. TAG=w2k when sweeping -wait).
-#
-# RUNS defaults to 1000. The current leak site (BitwiseAndHandler +0x080) has a
-# per-trace detection ceiling of 0.779, against 0.827 for the site this replaced,
-# so the vote needs more traces to reach the same confidence -- at 200 no decoder
-# setting reaches 0 wrong bits, at 1000 it does. A 1000-run capture takes ~7 s.
+# Env: BIN, BUILD, CPUS (one socket -- node1 odd CPUs on leapx02), RUNS,
+# WARMUP, TAG (extra label in the capture directory name).
 set -u
 
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BUILD=${BUILD:-$SRC/../../build/experiments/v8_constant_time_js}
 BIN=${BIN:-$BUILD/v8_ctjs_ecdh}
 POOL=${POOL:-$SRC/../v8_ecdh/ec_key_pool}
-CPUS=${CPUS:-9,11,13,15}
+# Six of node1's eight cores, one socket. P+P starves below three runnable
+# threads and measured best at six (median 0.875 over 8 reps against 0.866 at
+# eight). F+R is insensitive to the count, so this costs it nothing.
+CPUS=${CPUS:-5,7,9,11,13,15}
 RUNS=${RUNS:-1000}
 TAG=${TAG:-}
 WARMUP=${WARMUP:-5}
 
-prim=ps
+prim=fr
 flags=()
 keys=()
 for a in "$@"; do
   case $a in
-    -fr) prim=fr; flags+=("$a") ;;
-    -pp) prim=pp; flags+=("$a") ;;
-    -*)  flags+=("$a") ;;
-    *)   keys+=("$a") ;;
+    -fr)  prim=fr;  flags+=("$a") ;;
+    -pp)  prim=pp;  flags+=("$a") ;;
+    -csi) prim=csi; flags+=("$a") ;;
+    -*)   flags+=("$a") ;;
+    *)    keys+=("$a") ;;
   esac
 done
 
-if [ ${#keys[@]} -eq 0 ]; then
-  echo "usage: $0 [-fr|-pp] [attacker-flags...] <key-name>..." >&2
+# CSI drives its own probe keys, so <key-name> is optional there.
+if [ ${#keys[@]} -eq 0 ] && [ "$prim" != csi ]; then
+  echo "usage: $0 [-fr|-pp|-csi] [attacker-flags...] <key-name>..." >&2
   exit 1
 fi
 [ -x "$BIN" ] || { echo "ERROR: no attacker binary at $BIN" >&2; exit 1; }
@@ -60,29 +49,16 @@ fi
 cd "$BUILD" || exit 1
 raw="output/v8_ctjs_ecdh_r$(printf '%05d' "$RUNS")"
 
-# One scratch file for every capture's stdout, removed however we exit. It is
-# kept next to the captures rather than in /tmp because it holds the whole
-# attacker stdout, including the -bits oracle stream derived from the private
-# scalar (mktemp creates it 0600).
+# Holds the whole attacker stdout, oracle stream included, so it stays next to
+# the captures rather than in /tmp (mktemp creates it 0600).
 out=$(mktemp -p "$BUILD")
 
-# BITS=1 captures the victim's OWN per-bit (tsc, bit) pairs alongside the trace,
-# for extract_v8_ct_ecdh.py --oracle. This generated copy is the ONLY switch:
-# the attacker reads `debug` out of whatever source it was handed and drains
-# gt_ts/gt_bit to <raw>/victim_bits.txt when it is set. There is deliberately no
-# attacker flag for it -- there used to be, and a flag that disagreed with the
-# loaded source gave a capture that looked healthy and quietly had no oracle.
-#
-# The source flip is a GENERATED copy rather than a second checked-in .js: a
-# hand-kept copy drifts, and a stale `let debug = 1;` in one is exactly the bug
-# that once made a single derive emit 750-2226 trace lines instead of 246 and
-# quietly corrupted every per-bit statistic computed from it. `debug` must stay
-# `let` and stay on line 1 for the sed to bite -- see the comment on it there.
-#
-# It has to be the SAME run as the trace: --oracle uses those timestamps as the
-# true slot boundaries against the attacker's samples, on the one rdtscp clock.
-# Ground truth captured separately would only supply bit VALUES, which --key
-# already knows.
+# BITS=1 generates a copy of the victim source with `let debug = 1;`, which
+# makes the attacker drain the victim's own per-bit (tsc, bit) pairs to
+# <raw>/victim_bits.txt for --oracle. The generated copy is the only switch --
+# an attacker flag that disagreed with the loaded source used to give a capture
+# that looked healthy and had no oracle. It must be the same run as the trace,
+# since --oracle uses those timestamps as the true slot boundaries.
 SRC_JS=$SRC/js/ecdh_ct_eval.js
 TMP_JS=                       # non-empty ONLY when we generated one to delete
 if [ "${BITS:-0}" = 1 ]; then
@@ -95,10 +71,50 @@ fi
 
 trap 'rm -f "$out" ${TMP_JS:+"$TMP_JS"}' EXIT INT TERM
 
+# CSI is its own capture shape: it writes one r<l3_set>.out per candidate L3
+# set to output/v8_ctjs_ecdh, with the three csi_probe_keys as columns, and
+# drives the victim through those keys itself rather than looping over
+# <key-name>. BITS=1 adds csi_truth.txt and victim_bits.txt for offline
+# scoring.
+if [ "$prim" = csi ]; then
+  csi_raw="output/v8_ctjs_ecdh"
+  k=${keys[0]:-zeros}
+  case $k in
+    *[!0-9]*|'') key_file=$SRC/ec_key_$k.hex ;;
+    *)           key_file=$POOL/ec_key_$k.json ;;
+  esac
+  [ -f "$key_file" ] || key_file=$SRC/ec_key_zeros.hex
+  dst="output/csi${TAG:+_$TAG}"
+  rm -rf "$csi_raw" "$dst"
+  echo "### csi (key $key_file, BITS=${BITS:-0}, cpus $CPUS)"
+  if [ -n "$TMP_JS" ]; then
+    printf "+ sed 's/^let debug = 0;/let debug = 1;/' %q > %q  # oracle copy, deleted on exit\n" \
+      "$SRC/js/ecdh_ct_eval.js" "$SRC_JS"
+  fi
+  printf '+'
+  printf ' %q' taskset -c "$CPUS" "$BIN" "${flags[@]}" -warmup="$WARMUP" \
+    "$SRC_JS" "$SRC/js/ecdh_ct_repeat.js" "$key_file"
+  echo
+  taskset -c "$CPUS" "$BIN" "${flags[@]}" -warmup="$WARMUP" \
+    "$SRC_JS" "$SRC/js/ecdh_ct_repeat.js" "$key_file" \
+    > "$out" 2>&1
+  grep -aE "page slot|TRUE target set|CSI ground truth|samples|failed|ERROR" \
+    "$out" | sed 's/\x1b\[[0-9;]*m//g'
+  if [ -d "$csi_raw" ] && [ -n "$(ls "$csi_raw"/*.out 2>/dev/null)" ]; then
+    [ -s "$csi_raw/victim_bits.txt" ] || rm -f "$csi_raw/victim_bits.txt"
+    mv "$csi_raw" "$dst"
+    echo "    -> $BUILD/$dst  ($(ls "$dst"/*.out 2>/dev/null | wc -l) candidate \
+sets$([ -f "$dst/victim_bits.txt" ] && echo ', + oracle')$(
+      [ -f "$dst/csi_truth.txt" ] && echo ', + truth'))"
+  else
+    rm -rf "$csi_raw"
+    echo "    !! no candidate traces produced" >&2
+  fi
+  exit 0
+fi
+
 for k in "${keys[@]}"; do
-  # A key name that is all digits is a pool index; anything else names a
-  # crafted raw-hex scalar next to the victim sources. The attacker takes
-  # either file and tells the two apart by extension.
+  # All digits -> pool index, anything else -> crafted raw-hex scalar.
   case $k in
     *[!0-9]*|'') key_file=$SRC/ec_key_$k.hex; label=$k ;;
     *)           key_file=$POOL/ec_key_$k.json; label=k$k ;;
@@ -108,9 +124,7 @@ for k in "${keys[@]}"; do
 
   rm -rf "$raw" "$dst"
   echo "### $prim $k (runs=$RUNS, key $key_file)"
-  # With BITS=1, $SRC_JS is the mktemp'd oracle copy the trap below deletes on
-  # exit -- printing the command alone would hand back a path that is already
-  # gone by the time anyone could paste it, so the regen line goes with it.
+  # $SRC_JS is deleted on exit under BITS=1, so print how to regenerate it.
   if [ -n "$TMP_JS" ]; then
     printf "+ sed 's/^let debug = 0;/let debug = 1;/' %q > %q  # regenerates the oracle copy below; deleted on exit\n" \
       "$SRC/js/ecdh_ct_eval.js" "$SRC_JS"
@@ -122,26 +136,15 @@ for k in "${keys[@]}"; do
   taskset -c "$CPUS" "$BIN" "${flags[@]}" -runs="$RUNS" -warmup="$WARMUP" \
     "$SRC_JS" "$SRC/js/ecdh_ct_repeat.js" "$key_file" \
     > "$out" 2>&1
-  # "qualified|rebuilding|never produced" are the attacker's pre-capture evset
-  # fingerprint verdicts -- the one thing worth seeing BEFORE the run counts,
-  # since a channel that needed three attempts is a channel to distrust.
-  grep -aE "run 1/|run $RUNS/|cl[0-9] role|channel metadata|failed|ERROR\
-|qualified|rebuilding|never produced" "$out" \
-    | sed 's/\x1b\[[0-9;]*m//g'
+  grep -aE "run 1/|run $RUNS/|cl[0-9] role|channel metadata|failed|ERROR" \
+    "$out" | sed 's/\x1b\[[0-9;]*m//g'
 
-  # -d "$raw" alone is not enough to call it a capture: the attacker creates
-  # the directory for its `channels` metadata before it probes anything, so an
-  # attacker that aborted -- a channel that never passed the pre-capture evset
-  # fingerprint, say -- left a directory holding one file and no traces, and
-  # this filed it under $dst as a real capture with "(0 traces)".
+  # -d "$raw" alone is not enough: the attacker creates the directory for its
+  # `channels` metadata before it probes, so an aborted run leaves one behind.
   if [ -d "$raw" ] && [ -n "$(ls "$raw"/*.out 2>/dev/null)" ]; then
-    # victim_bits.txt -- the victim's own per-bit (tsc, bit) pairs, one block
-    # per profiled derive, in run order -- is written by the attacker itself
-    # when BITS=1 put `let debug = 1;` in the source above, straight from the
-    # typed arrays. It used to be scraped out of stdout here; it no longer is,
-    # because a log line from another thread could splice into a pair and
-    # `grep '^[0-9]+,[01]$'` would drop it, shifting every later run's block
-    # without a word. Absent (BITS unset) the file simply never appears.
+    # The attacker writes victim_bits.txt itself under BITS=1. Do not go back
+    # to scraping it from stdout -- a log line from another thread splices into
+    # a pair and shifts every later run's block silently.
     [ -s "$raw/victim_bits.txt" ] || rm -f "$raw/victim_bits.txt"
     mv "$raw" "$dst"
     echo "    -> $BUILD/$dst  ($(ls "$dst"/*.out 2>/dev/null | wc -l) traces$(

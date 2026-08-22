@@ -1,7 +1,9 @@
 #include "dsp.h"
 #include "log.h"
 #include <fftw3.h>
+#include <limits.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -151,6 +153,207 @@ int *find_peaks(double *x,
 const uint64_t cpu_freq = 2800000000;
 const uint32_t PS_sample_interval = 10000;
 const uint32_t PS_fs = cpu_freq / PS_sample_interval;
+
+static int compare_u64(const void *a, const void *b) {
+	uint64_t x = *(const uint64_t *)a;
+	uint64_t y = *(const uint64_t *)b;
+	return (x > y) - (x < y);
+}
+
+static uint64_t median_u64(uint64_t *values, uint32_t count) {
+	qsort(values, count, sizeof(*values), compare_u64);
+	if (count & 1) {
+		return values[count / 2];
+	}
+	uint64_t a = values[count / 2 - 1];
+	uint64_t b = values[count / 2];
+	return a + (b - a) / 2;
+}
+
+static uint64_t estimate_burst_period_c(const uint64_t *hits,
+                                        uint32_t count,
+                                        uint64_t gap_split) {
+	uint64_t *starts = malloc(sizeof(*starts) * count);
+	uint64_t *steps = malloc(sizeof(*steps) * count);
+	uint64_t *core = malloc(sizeof(*core) * count);
+	if (!starts || !steps || !core) {
+		free(starts);
+		free(steps);
+		free(core);
+		return 0;
+	}
+
+	uint32_t nstarts = 1;
+	starts[0] = hits[0];
+	for (uint32_t i = 1; i < count; ++i) {
+		if (hits[i] - hits[i - 1] > gap_split) {
+			starts[nstarts++] = hits[i];
+		}
+	}
+	if (nstarts < 4) {
+		free(starts);
+		free(steps);
+		free(core);
+		return 0;
+	}
+
+	for (uint32_t i = 1; i < nstarts; ++i) {
+		steps[i - 1] = starts[i] - starts[i - 1];
+	}
+	uint64_t period = median_u64(steps, nstarts - 1);
+	uint32_t ncore = 0;
+	/* Trace periods are many orders below these overflow guards. Keeping the
+	 * comparisons integral makes this identical to a small embedded/CSI port. */
+	if (period <= UINT64_MAX / 180) {
+		for (uint32_t i = 1; i < nstarts; ++i) {
+			uint64_t step = starts[i] - starts[i - 1];
+			if (step * 100 > period * 55 && step * 100 < period * 180) {
+				core[ncore++] = step;
+			}
+		}
+	}
+	if (ncore) {
+		period = median_u64(core, ncore);
+	}
+
+	free(starts);
+	free(steps);
+	free(core);
+	return period;
+}
+
+int analyze_burst_pattern(const uint64_t *timestamps,
+                          uint32_t count,
+                          uint64_t gap_split,
+                          uint32_t max_periods,
+                          uint64_t period_hint,
+                          burst_pattern_stats_t *stats) {
+	if (!timestamps || !stats || !gap_split || count < 8) {
+		return 0;
+	}
+	memset(stats, 0, sizeof(*stats));
+
+	uint64_t *hits = malloc(sizeof(*hits) * count);
+	if (!hits) {
+		return 0;
+	}
+	uint32_t nhits = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (timestamps[i]) {
+			hits[nhits++] = timestamps[i];
+		}
+	}
+	if (nhits < 8) {
+		free(hits);
+		return 0;
+	}
+	qsort(hits, nhits, sizeof(*hits), compare_u64);
+	uint32_t unique = 1;
+	for (uint32_t i = 1; i < nhits; ++i) {
+		if (hits[i] != hits[unique - 1]) {
+			hits[unique++] = hits[i];
+		}
+	}
+	nhits = unique;
+
+	uint64_t period = period_hint ?
+	                      period_hint :
+	                      estimate_burst_period_c(hits, nhits, gap_split);
+	if (!period) {
+		free(hits);
+		return 0;
+	}
+	stats->period = period;
+
+	uint32_t roi_left = 0, roi_right = nhits - 1;
+	if (max_periods) {
+		if (period > UINT64_MAX / max_periods) {
+			free(hits);
+			return 0;
+		}
+		uint64_t width = period * max_periods;
+		uint32_t left = 0, best_left = 0, best_right = 0;
+		for (uint32_t right = 0; right < nhits; ++right) {
+			while (hits[right] - hits[left] > width) {
+				++left;
+			}
+			if (right - left > best_right - best_left) {
+				best_left = left;
+				best_right = right;
+			}
+		}
+		roi_left = best_left;
+		roi_right = best_right;
+		stats->window_start = hits[best_left];
+		stats->window_end = hits[best_left] + width;
+	} else {
+		stats->window_start = hits[0];
+		stats->window_end = hits[nhits - 1] + 1;
+	}
+	stats->event_count = roi_right - roi_left + 1;
+
+	uint64_t skip_threshold = period + period / 2;
+	for (uint32_t i = roi_left + 1; i <= roi_right; ++i) {
+		uint64_t gap = hits[i] - hits[i - 1];
+		if (gap <= gap_split) {
+			++stats->intra_intervals;
+		} else if (gap < skip_threshold) {
+			++stats->next_intervals;
+		} else {
+			++stats->skipped_intervals;
+		}
+	}
+
+	uint64_t *centers = malloc(sizeof(*centers) * stats->event_count);
+	if (!centers) {
+		free(hits);
+		return 0;
+	}
+	uint32_t ncenters = 0;
+	uint32_t begin = roi_left;
+	for (uint32_t i = roi_left + 1; i <= roi_right + 1; ++i) {
+		bool end = i > roi_right || hits[i] - hits[i - 1] > gap_split;
+		if (!end) {
+			continue;
+		}
+		uint64_t offset_sum = 0;
+		for (uint32_t j = begin + 1; j < i; ++j) {
+			offset_sum += hits[j] - hits[begin];
+		}
+		centers[ncenters++] = hits[begin] + offset_sum / (i - begin);
+		begin = i;
+	}
+	stats->burst_count = ncenters;
+
+	for (uint32_t i = 1; i < ncenters; ++i) {
+		uint64_t gap = centers[i] - centers[i - 1];
+		uint64_t multiple = gap / period;
+		uint64_t remainder = gap % period;
+		if (remainder >= (period + 1) / 2) {
+			++multiple;
+		}
+		if (multiple < 1) {
+			multiple = 1;
+		}
+		uint32_t bin = multiple >= BURST_GAP_HIST_BINS ?
+		                   BURST_GAP_HIST_BINS - 1 :
+		                   (uint32_t)multiple - 1;
+		++stats->gap_hist[bin];
+		stats->inferred_missing += multiple - 1;
+	}
+	stats->inferred_periods =
+	    (ncenters ? ncenters - 1 : 0) + stats->inferred_missing;
+	stats->period_count_within_max = !max_periods ||
+	                                 stats->inferred_periods <= max_periods;
+	if (stats->inferred_periods) {
+		stats->missing_rate =
+		    (double)stats->inferred_missing / (double)stats->inferred_periods;
+	}
+
+	free(centers);
+	free(hits);
+	return 1;
+}
 
 int check_cache_set_psd(uint64_t *probes,
                         uint32_t n_probes,

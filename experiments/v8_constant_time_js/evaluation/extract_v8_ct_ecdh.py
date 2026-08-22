@@ -1253,7 +1253,57 @@ class EC_KEY:
                       round(A, 3), round(sd_a, 4), round(float(sd_1), 3)),
         }
 
-    def vote_matched(self, kept, taps=None, margin=None, kernel=None):
+    def _matched_labels(self, f, taps, margin, kernel):
+        """One averaged score vector -> (labels, (c, h, sd)) or (None, None).
+
+        Pulled out of vote_matched so the SAME fit can run on a disjoint trace
+        subset for the fold fail-safe below -- exactly what _history_labels and
+        _counts_labels do for their decoders. Fits (or applies) the kernel,
+        runs the Viterbi deconvolution, and turns per-bit posteriors into
+        labels at `margin`; does not touch self.* or compute known/wrong."""
+        n = len(f)
+        fin = np.isfinite(f)
+        if fin.sum() < 8 * taps:
+            return None, None
+        g = np.where(fin, f, np.nanmedian(f[fin]))
+
+        if kernel is not None:
+            c, h = kernel
+        else:
+            # Blind seed: the marker fires on `marker_value` bits, so the
+            # highest slots are the likeliest to be one -- but shifted by the
+            # response lag, which is exactly what we do not know yet. Seeding
+            # from a plain threshold is enough for the alternation to lock on.
+            z = (g >= np.median(g)).astype(float)
+            c, h = None, None
+            for _ in range(ps_fit_rounds):
+                c, h = fit_matched_kernel(z, g, taps)
+                if not np.any(h > 0):
+                    return None, None
+                z_new, _ = viterbi_matched(g, c, h, ps_noise_sd(g, c, h, z))
+                if np.array_equal(z_new, z):
+                    break
+                z = z_new
+
+        sd = ps_noise_sd(g, c, h, None)
+        z_hat, post = viterbi_matched(g, c, h, sd, posteriors=True)
+
+        marker_value = self.builtin_lines[
+            [i for i, r in enumerate(self.builtin_lines)
+             if r.role in "01"][0]].role
+        other = "1" if marker_value == "0" else "0"
+
+        pred = []
+        for i in range(n):
+            p = post[i] if i < len(post) else 0.5
+            conf = max(p, 1.0 - p)
+            if conf < margin:
+                pred.append("u")
+            else:
+                pred.append(marker_value if z_hat[i] else other)
+        return pred, (c, h, sd)
+
+    def vote_matched(self, kept, taps=None, margin=None, kernel=None, folds=None):
         """P+S decode: matched filter over the SMEARED, LAGGED response.
 
         F+R and P+S need different decoders because their impulse responses
@@ -1279,51 +1329,41 @@ class EC_KEY:
         `kernel` is (c, h) profiled elsewhere -- the shape is a property of the
         primitive and the machine, not of the key, so it transfers. Without one
         the kernel is fitted blind, by alternating fit and Viterbi from a
-        threshold seed."""
+        threshold seed.
+
+        `folds` is the SAME fail-safe vote_history and vote_counts already
+        have, and this decoder was the one of the three missing it. The
+        posterior above is exactly as self-referential as their LLR: the blind
+        path fits the kernel to its own hard labels and reads the noise sd off
+        its own residuals, so it is not a calibrated confidence either --
+        measured on ps_k7_r00100, the no-fold decode reported posterior>=0.99
+        on 24 bits and was wrong on 6 of them. Fitting the same model on 3
+        disjoint trace subsets and keeping a bit only where every subset
+        agrees with the full decode cut that to 4 wrong (15 known)."""
         taps = history_taps + 1 if taps is None else taps
         margin = ps_posterior if margin is None else margin
+        folds = llr_folds if folds is None else folds
         n = self.secret_key_bits
         f = self._mean_score(kept)
-        fin = np.isfinite(f)
-        if fin.sum() < 8 * taps:
+        pred, model = self._matched_labels(f, taps, margin, kernel)
+        if pred is None:
             return self.vote(kept)
-        g = np.where(fin, f, np.nanmedian(f[fin]))
 
-        if kernel is not None:
-            c, h = kernel
-        else:
-            # Blind seed: the marker fires on `marker_value` bits, so the
-            # highest slots are the likeliest to be one -- but shifted by the
-            # response lag, which is exactly what we do not know yet. Seeding
-            # from a plain threshold is enough for the alternation to lock on.
-            z = (g >= np.median(g)).astype(float)
-            c, h = None, None
-            for _ in range(ps_fit_rounds):
-                c, h = fit_matched_kernel(z, g, taps)
-                if not np.any(h > 0):
-                    return self.vote(kept)
-                z_new, _ = viterbi_matched(g, c, h, ps_noise_sd(g, c, h, z))
-                if np.array_equal(z_new, z):
-                    break
-                z = z_new
+        eff_folds = folds if folds > 1 and len(kept) >= 4 * folds else 1
+        if eff_folds > 1:
+            s = np.atleast_2d(self.scores)[kept]
+            for k in range(folds):
+                with np.errstate(invalid="ignore"):
+                    sub = np.nanmean(s[k::folds], axis=0)
+                lab, _ = self._matched_labels(sub, taps, margin, kernel)
+                if lab is None:
+                    continue
+                pred = [p if p == q and p != "u" else "u"
+                        for p, q in zip(pred, lab)]
 
-        sd = ps_noise_sd(g, c, h, None)
-        z_hat, post = viterbi_matched(g, c, h, sd, posteriors=True)
-
-        marker_value = self.builtin_lines[
-            [i for i, r in enumerate(self.builtin_lines)
-             if r.role in "01"][0]].role
-        other = "1" if marker_value == "0" else "0"
-
-        pred = []
-        for i in range(n):
-            p = post[i] if i < len(post) else 0.5
-            conf = max(p, 1.0 - p)
-            if conf < margin:
-                pred.append("u")
-            else:
-                pred.append(marker_value if z_hat[i] else other)
+        pred = list(pred)
         pred[n - 1] = "u"   # last slot has no following burst to bound it
+        c, h, sd = model
 
         known = correct = unknown = 0
         for i in range(n):
@@ -1340,6 +1380,7 @@ class EC_KEY:
             "known_acc": correct / known if known else None,
             "traces": len(kept),
             "band": None,
+            "folds": eff_folds,
             "model": (tuple(round(float(v), 3) for v in np.atleast_1d(h)),
                       round(float(c), 3), round(float(sd), 4),
                       "profiled" if kernel is not None else "blind"),
@@ -1575,7 +1616,7 @@ class EC_KEY:
 # Real vs inferred comparison
 # ---------------------------------------------------------------------------
 
-def print_key_comparison(true_bits, pred, width=128):
+def print_key_comparison(true_bits, pred, width=60):
     """Print the true scalar against the decode, chunked, with a diff row so
     the wrong/unknown bits are visible at a glance rather than buried in a
     count. `pred` is exactly len(true_bits) chars over {'0','1','u'} -- every
@@ -1722,9 +1763,10 @@ if __name__ == "__main__":
                         help=f"history decode: |LLR| below this -> unknown "
                              f"(default {llr_margin}; 0 labels every bit)")
     parser.add_argument("--llr-folds", type=int,
-                        help=f"history decode: report only bits on which this "
-                             f"many disjoint trace subsets agree with the full "
-                             f"decode (default {llr_folds}, 1 disables)")
+                        help=f"history/matched decode: report only bits on "
+                             f"which this many disjoint trace subsets agree "
+                             f"with the full decode (default {llr_folds}, "
+                             f"1 disables)")
     parser.add_argument("--halfwidth", type=float,
                         help=f"history decode: half-width of the window used to "
                              f"locate the 0-cluster (default {mode_halfwidth})")
@@ -1813,14 +1855,7 @@ if __name__ == "__main__":
     kept = skey.all_traces()
     print(f"\ndecoded {len(kept)} traces")
 
-    # The matched decode is the default for P+S, whose response peaks at lag 1;
-    # running the F+R history model on it reads every bit off its neighbour.
-    # It is NOT a fallback for P+P: P+P's response has no lag to deconvolve,
-    # so vote_matched only adds a kernel fit vote_history does not need.
     matched = (primitive == "ps") if args.matched is None else args.matched
-    # vote_counts was the intended default for P+P but is no longer it -- see
-    # its docstring. --counts still forces it, for comparison or a capture
-    # thin enough that vote_history returns too few known bits to be useful.
     counts = bool(args.counts)
 
     kernel = None
