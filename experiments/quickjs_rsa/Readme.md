@@ -1,9 +1,8 @@
 # Case Study 1: QuickJS — OpenPGP.js
 
-Reproduces the results in **paper §4.2** (QuickJS — OpenPGP.js), including the
-disclosure and patch analysis in §4.2's final subsection (see
-[`openpgp_patch/`](./openpgp_patch/Readme.md) and
-[`openpgp_patch_rsa/`](./openpgp_patch_rsa/Readme.md)).
+Reproduces the results in **paper §4.2** (QuickJS — OpenPGP.js). The disclosure
+and patch analysis in the same section lives in
+[`openpgp_patch/`](./openpgp_patch/Readme.md).
 
 QuickJS version: `3b45d15`
 

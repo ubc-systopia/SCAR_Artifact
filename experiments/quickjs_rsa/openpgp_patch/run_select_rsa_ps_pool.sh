@@ -27,7 +27,7 @@ GZIP_TRACES="${GZIP_TRACES:-1}"
 
 VICTIM_BIN="${BUILD}/src/runtime/quickjs/quickjs_rt"
 ATTACKER_BIN="${BUILD}/experiments/quickjs_rsa/quickjs_select_rsa_ps"
-VICTIM_JS="${ROOT}/experiments/quickjs_rsa/openpgp_patch_rsa/js/openpgp_select_rsa.js"
+VICTIM_JS="${ROOT}/experiments/quickjs_rsa/openpgp_patch/js/openpgp_select_rsa.js"
 # Not a knob: quickjs_select_rsa_ps.c builds this path itself from its
 # test_name, so the driver has to look in the same place.
 OUT_ROOT="${BUILD}/output/quickjs_select_rsa_ps"

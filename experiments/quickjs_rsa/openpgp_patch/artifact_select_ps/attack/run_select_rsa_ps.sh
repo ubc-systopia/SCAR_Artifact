@@ -3,16 +3,21 @@
 # quickjs_select_rsa_ps attacker. Companion to run_select_rsa_eval.sh (FR).
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# repo root: attack/ -> artifact_select_ps/ -> openpgp_patch/ -> quickjs_rsa/
+#            -> experiments/ -> SCAR_Artifact
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 BUILD="${ROOT}/build"
-CPUS="${CPUS:-1,3,5,7,9,11,13,15}"
+# CPUS="${CPUS:-1,3,5,7,9,11,13,15}"
+CPUS="${CPUS:-12,14}"
 VICTIM_RUNS="${VICTIM_RUNS:-5}"
+# which libbf cache line(s) to probe: or (default) | and | both
+PROBE_LINE="${PROBE_LINE:-or}"
 ROUND_CYCLES="${ROUND_CYCLES:-4000000000}"
 KEY_ID="${KEY_ID:-0}"
 
 VICTIM_BIN="${BUILD}/src/runtime/quickjs/quickjs_rt"
 ATTACKER_BIN="${BUILD}/experiments/quickjs_rsa/quickjs_select_rsa_ps"
-VICTIM_JS="${ROOT}/experiments/quickjs_rsa/openpgp_patch_rsa/js/openpgp_select_rsa.js"
+VICTIM_JS="${ROOT}/experiments/quickjs_rsa/openpgp_patch/js/openpgp_select_rsa.js"
 
 for f in "$VICTIM_BIN" "$ATTACKER_BIN"; do
 	[ -x "$f" ] || { echo "Missing binary: $f" >&2; exit 1; }
@@ -32,8 +37,9 @@ trap cleanup EXIT
 
 sleep 1
 
-echo "== Starting Prime+Scope attacker (VICTIM_RUNS=${VICTIM_RUNS}, KEY_ID=${KEY_ID}) =="
+echo "== Starting Prime+Scope attacker (VICTIM_RUNS=${VICTIM_RUNS}, KEY_ID=${KEY_ID}, PROBE_LINE=${PROBE_LINE}) =="
 VICTIM_RUNS="$VICTIM_RUNS" ROUND_CYCLES="$ROUND_CYCLES" KEY_ID="$KEY_ID" \
+	PROBE_LINE="$PROBE_LINE" \
 	taskset -c "$CPUS" "$ATTACKER_BIN" "$VICTIM_RUNS"
 ATTACKER_STATUS=$?
 

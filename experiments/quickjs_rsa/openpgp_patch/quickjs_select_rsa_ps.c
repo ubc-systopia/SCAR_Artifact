@@ -2,7 +2,7 @@
  * real RSA-4096 BigInteger.modExp loop. Same victim as quickjs_select_rsa_fr.c;
  * only the measurement primitive and the target line differ.
  *
- * WHY P+S HERE (see openpgp_patch_rsa/PROGRESS.md for the full trail):
+ * WHY P+S HERE:
  * the FR attacker's probe period bottoms out at ~1778 cycles, because each
  * probe only detects an access landing between its flush and its reload, so
  * shrinking FR_wait trades sensitivity away for resolution roughly 1:1 (a

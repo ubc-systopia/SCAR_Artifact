@@ -23,7 +23,7 @@
  * and __bf_sub, both tail-jumps into the same code), including the internal
  * subtraction steps of bf_mul/bf_divrem (i.e. the (r*x)%n and (x*x)%n work
  * every modExp iteration does *regardless* of the secret bit). A pure
- * bf_add_internal hit-count probe (see openpgp_patch_rsa/PROGRESS.md) cannot
+ * bf_add_internal hit-count probe cannot
  * separate SELECT's cond-dependent subtraction from that unconditional
  * background traffic, and measured at chance accuracy (~50%).
  *

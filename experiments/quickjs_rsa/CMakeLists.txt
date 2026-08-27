@@ -14,11 +14,11 @@ add_executable(quickjs_select_fr openpgp_patch/quickjs_select_fr.c)
 
 target_link_libraries(quickjs_select_fr PRIVATE utils flush_reload prime_probe quickjs_runtime)
 
-add_executable(quickjs_select_rsa_fr openpgp_patch_rsa/quickjs_select_rsa_fr.c)
+add_executable(quickjs_select_rsa_fr openpgp_patch/quickjs_select_rsa_fr.c)
 
 target_link_libraries(quickjs_select_rsa_fr PRIVATE utils flush_reload prime_probe quickjs_runtime)
 
-add_executable(quickjs_select_rsa_ps openpgp_patch_rsa/quickjs_select_rsa_ps.c)
+add_executable(quickjs_select_rsa_ps openpgp_patch/quickjs_select_rsa_ps.c)
 
 target_include_directories(quickjs_select_rsa_ps PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 

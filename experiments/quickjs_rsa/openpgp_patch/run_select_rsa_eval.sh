@@ -13,8 +13,8 @@ KEY_ID="${KEY_ID:-0}"
 
 VICTIM_BIN="${BUILD}/src/runtime/quickjs/quickjs_rt"
 ATTACKER_BIN="${BUILD}/experiments/quickjs_rsa/quickjs_select_rsa_fr"
-VICTIM_JS="${ROOT}/experiments/quickjs_rsa/openpgp_patch_rsa/js/openpgp_select_rsa.js"
-EXTRACT="${ROOT}/experiments/quickjs_rsa/openpgp_patch_rsa/evaluation/extract_select_rsa.py"
+VICTIM_JS="${ROOT}/experiments/quickjs_rsa/openpgp_patch/js/openpgp_select_rsa.js"
+EXTRACT="${ROOT}/experiments/quickjs_rsa/openpgp_patch/evaluation/extract_select_rsa.py"
 
 for f in "$VICTIM_BIN" "$ATTACKER_BIN"; do
 	if [ ! -x "$f" ]; then
@@ -57,7 +57,7 @@ echo "== Trace directory: ${TRACE_DIR} =="
 ls -la "$TRACE_DIR" || { echo "No trace directory produced" >&2; exit 1; }
 
 echo "== Decoding ${TRACE_DIR} =="
-cd "${ROOT}/experiments/quickjs_rsa/openpgp_patch_rsa/evaluation"
+cd "${ROOT}/experiments/quickjs_rsa/openpgp_patch/evaluation"
 PYTHON="${ROOT}/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
 "$PYTHON" "$EXTRACT" -d "$TRACE_DIR" --id "$KEY_ID"
