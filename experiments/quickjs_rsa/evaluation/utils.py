@@ -16,6 +16,13 @@ from rich.progress import (
 cpu_freq = 2800000000
 PS_sample_interval = 10000
 PS_fs = cpu_freq // PS_sample_interval
+PS_target_freq = 9333
+
+# FR loop cadence: TBD, co-tunable with quickjs_rsa_fr.c's `waiting_time` constant.
+# Starting guess matches that constant (in TSC cycles) until calibrated on real hardware.
+FR_sample_interval = 20000
+FR_fs = cpu_freq // FR_sample_interval
+FR_target_freq = 9333
 
 progress = Progress(
     TextColumn("[progress.description]{task.description}"),

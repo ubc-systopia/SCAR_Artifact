@@ -1,3 +1,5 @@
 add_subdirectory(cpython)
 add_subdirectory(quickjs)
-add_subdirectory(v8)
+if(SCAR_ENABLE_V8)
+    add_subdirectory(v8)
+endif()

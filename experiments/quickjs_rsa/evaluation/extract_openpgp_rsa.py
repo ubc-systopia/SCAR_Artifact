@@ -152,7 +152,8 @@ class RSA_KEY:
             drop=True
         )
 
-        post_boundary = post_processing_boundary(goto8_samples["tsc"])
+        target_freq = PS_target_freq if attack_type == "PS" else FR_target_freq
+        post_boundary = post_processing_boundary(goto8_samples["tsc"], target_freq)
 
         last_hit = np.max(data_samples["tsc"])
         data_sample_tuples = list(data_samples.itertuples(index=False))
@@ -348,7 +349,7 @@ class RSA_KEY:
         return RSA_KEY(rsa_key["d"], kid)
 
 
-def post_processing_boundary(data_samples):
+def post_processing_boundary(data_samples, target_freq=9333):
     probe_ts = data_samples.apply(
         lambda x: round(x / sample_interval) * sample_interval
     )
@@ -362,7 +363,6 @@ def post_processing_boundary(data_samples):
         signals[ts // sample_interval] = 1
 
     frequencies, times, Zxx = stft(signals, fs, nperseg=128)
-    target_freq = 9333
     index_2khz = np.argmin(np.abs(frequencies - target_freq))
 
     magnitude = np.abs(Zxx)
@@ -806,6 +806,13 @@ if __name__ == "__main__":
         "errors, more unknown)",
     )
 
+    parser.add_argument(
+        "--sample-interval",
+        type=int,
+        help="Override FR_sample_interval (TSC cycles) for the STFT boundary "
+        "detector, e.g. to track a swept quickjs_rsa_fr WAITING_TIME",
+    )
+
     args = parser.parse_args()
     if args.no_cache:
         use_cache = False
@@ -824,6 +831,9 @@ if __name__ == "__main__":
     if args.at == "PS":
         sample_interval = PS_sample_interval
         fs = PS_fs
+    elif args.at == "FR":
+        sample_interval = args.sample_interval if args.sample_interval else FR_sample_interval
+        fs = cpu_freq // sample_interval
 
     kid = 0
     if args.id != None:
