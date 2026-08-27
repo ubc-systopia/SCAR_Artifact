@@ -1,5 +1,10 @@
 # Case Study 1: QuickJS — OpenPGP.js
 
+Reproduces the results in **paper §4.2** (QuickJS — OpenPGP.js), including the
+disclosure and patch analysis in §4.2's final subsection (see
+[`openpgp_patch/`](./openpgp_patch/Readme.md) and
+[`openpgp_patch_rsa/`](./openpgp_patch_rsa/Readme.md)).
+
 QuickJS version: `3b45d15`
 
 OpenPGP.js version: `v5.11.2`
@@ -51,10 +56,6 @@ taskset -c 1,3,5,7,9,11,13,15 ./experiments/quickjs_rsa/quickjs_rsa_fr
 cd SCAR_Artifact
 python experiments/quickjs_rsa/evaluation/extract_openpgp_rsa.py -f build/output/quickjs_openpgp_rsa_fr_r00001/r0.out --at FR
 ```
-
-`quickjs_rsa_fr`'s `waiting_time` constant (and the matching `FR_sample_interval`/
-`FR_fs`/`FR_target_freq` in `evaluation/utils.py`) are starting guesses and need
-tuning against real hardware — see `NOTE.md`.
 
 ### Key Pool Generation
 

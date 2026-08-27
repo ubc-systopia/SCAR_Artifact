@@ -1,8 +1,10 @@
 # Case Study 2: QuickJS — jpeg-js
 
+Reproduces the results in **paper §4.3** (QuickJS — jpeg-js).
+
 QuickJS version: `3b45d15`
 
-OpenPGP.js version: `72cb036`
+jpeg-js version: `72cb036`
 
 ## Description
 

@@ -1,5 +1,8 @@
 # OpenPGP.js constant-time `modExp` patch evaluation
 
+Reproduces the timing analysis in **paper §4.2**, disclosure and patch analysis
+(the `selectBigInt` execution-time distributions).
+
 OpenPGP.js version: `v5.11.2`
 
 QuickJS version: `3b45d15`
@@ -22,11 +25,6 @@ This experiment measures whether that branchless `selectBigInt` is actually
 constant-time *once executed by a real JS engine*. It times a single selection
 per measurement with `rdtscp`, split by the secret bit `cond`, and reports the
 single-sample distinguishability (AUC) on both V8 and QuickJS.
-
-**Result:** the patched `selectBigInt` still leaks the secret bit on both
-engines — the arbitrary-precision `BigInt` arithmetic underneath the masking is
-not itself constant-time, so the source-level "constant-time" property does not
-survive lowering to the engine's BigInt routines.
 
 ## Evaluation
 

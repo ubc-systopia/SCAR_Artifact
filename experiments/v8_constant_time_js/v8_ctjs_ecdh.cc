@@ -313,7 +313,7 @@ static const char *format_counts(char *buf, size_t n, const uint32_t *idx) {
  * is no reason to gate it behind a flag.
  * It cannot tell WHY a run is noisy (self-eviction, a scheduler hole, a
  * neighbor's cache attack -- this box is shared, see
- * project_leapx02_shared_load), only THAT it was, which is enough to flag it
+ * machine was loaded), only THAT it was, which is enough to flag it
  * for the operator without aborting hours of otherwise-good capture over one
  * run.
  *
@@ -1206,13 +1206,13 @@ static int identify_ctjs_target_sets(void) {
 	 * hctrl must NOT be pre-started: build_sf_evset_all (called from
 	 * LLCF_multi_evset, src/attack/LLCF.c:219,337) calls start_helper_thread/
 	 * stop_helper_thread on it ITSELF. Starting it here too double-starts the
-	 * helper thread on the same struct -- measured 2026-08-19 on leapx02,
+	 * helper thread on the same struct -- measured on the evaluation host,
 	 * deterministic SIGSEGV in the second thread's prime_cands_daniel on
 	 * garbage addrs/cnt, every run, right at "About to start evset
 	 * construction" (build_sf_evset_all's own log line). Matches
 	 * quickjs_rsa_key_pool.c's identify_quickjs_target_sets, which never
 	 * starts/stops hctrl around this call either. */
-	/* LLCF_multi_evset is measured-flaky on leapx02, so retry it. */
+	/* LLCF_multi_evset is measured-flaky on this host, so retry it. */
 	helper_thread_ctrl hctrl;
 	enum { llcf_max_attempts = 5 };
 	bool pool_built = false;

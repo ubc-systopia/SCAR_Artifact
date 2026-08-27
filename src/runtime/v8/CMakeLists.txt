@@ -5,8 +5,8 @@ add_library(v8_runtime STATIC v8_runtime.cc)
 add_dependencies(v8_runtime v8)
 
 target_include_directories(v8_runtime PUBLIC
-	${CMAKE_SOURCE_DIR}/third_party/v8/
-	${CMAKE_SOURCE_DIR}/third_party/v8/include
+	${V8_SRC_DIR}/
+	${V8_SRC_DIR}/include
 )
 
 target_compile_options(v8_runtime PUBLIC

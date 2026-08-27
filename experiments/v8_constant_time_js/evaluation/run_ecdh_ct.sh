@@ -10,7 +10,7 @@
 # <key-name> is an index into the shared pool ($POOL/ec_key_<i>.json, filed
 # under k<i>) or the suffix of a crafted scalar, ec_key_<name>.hex.
 #
-# Env: BIN, BUILD, CPUS (one socket -- node1 odd CPUs on leapx02), RUNS,
+# Env: BIN, BUILD, CPUS (one socket -- the odd CPUs of NUMA node 1), RUNS,
 # WARMUP, TAG (extra label in the capture directory name).
 set -u
 

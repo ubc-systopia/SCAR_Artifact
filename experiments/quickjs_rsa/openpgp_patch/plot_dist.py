@@ -208,7 +208,7 @@ def write_outputs(fig, rdir, basename, img_formats):
     html = os.path.join(rdir, f"{basename}.html")
     fig.write_html(html, include_plotlyjs=True)
     print(f"[*] wrote {html}")
-    # kaleido drives a headless chromium: works on x86 (leapx02, kaleido 0.2.1)
+    # kaleido drives a headless chromium: works on x86 (kaleido 0.2.1)
     # but its bundled chromium segfaults on the aarch64 dev box, so images are
     # exported only where possible — the HTML always works.
     for fmt in img_formats:
