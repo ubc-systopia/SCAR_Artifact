@@ -26,15 +26,9 @@ RUNS=100 TAG=paper experiments/v8_constant_time_js/evaluation/run_pp_batch.sh 0 
 Decode them and print the per-key statistics:
 
 ```bash
-python experiments/v8_constant_time_js/evaluation/decode_pp_batch.py \
-    --tag pp_paper -- --llr-folds 2 --llr-margin 2
+python experiments/v8_constant_time_js/evaluation/decode_pp_batch.py --tag pp_paper
 ```
 
-`--llr-folds`/`--llr-margin` trade coverage against accuracy. Measured over
-100 keys: folds 3 / margin 2 (the decoder's default) gives a median of 86.9%
-accuracy over 62.5% of bits, folds 2 / margin 2 gives 84.6% over 74.4%, and
-folds 1 / margin 2 gives 80.6% over 90.3%. The paper reports folds 2 /
-margin 2.
 
 A single capture is enough for the numbers above. To trade coverage for
 accuracy instead, capture the same keys two or three times under different
@@ -44,8 +38,6 @@ tags and keep only the bits the captures agree on:
 python experiments/v8_constant_time_js/evaluation/combine_pp_captures.py \
     --tags pp_paper,pp_paper2,pp_paper3 --rule agree --min-votes 3
 ```
-
-That reaches a median of 98.5% accuracy over 20.9% of bits.
 
 ### Capture health
 
@@ -63,3 +55,17 @@ More traces per key does not help. Measured on one key with four healthy
 launches at each count: 100 traces gives a median of 84.4% accuracy, 400 gives
 85.7%, and 1000 gives 72.5% and is far more erratic. Launch-to-launch variation
 dominates the trace count at every level.
+
+### Looking at a capture
+
+```bash
+# the health verdict a batch run uses, for one capture directory
+python experiments/v8_constant_time_js/evaluation/capture_health.py \
+    build/experiments/v8_constant_time_js/output/pp_paper_k0_r00100
+# both channels of one capture as a raster, with the ladder segmentation
+python experiments/v8_constant_time_js/evaluation/plot_ecdh_ct.py -d \
+    build/experiments/v8_constant_time_js/output/pp_paper_k0_r00100
+```
+
+`evaluation/DECODING.md` documents how the decoder turns those two channels
+into bits, and which of its stages earn their place.

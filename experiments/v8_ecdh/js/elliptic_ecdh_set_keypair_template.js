@@ -1,5 +1,5 @@
 {
-	let content = read('%s/ec_key_%d.json');
+	let content = read('%s');
 	let key_pair = JSON.parse(content);
 
 	key1 = key_pair['key1']

@@ -38,8 +38,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bokeh.layouts import column  # noqa: E402
-from bokeh.models import (BoxAnnotation, ColumnDataSource, HoverTool,  # noqa: E402
-                          Span)
+from bokeh.models import ColumnDataSource, HoverTool, Span  # noqa: E402
 from bokeh.plotting import figure, output_file, save  # noqa: E402
 from scipy.signal import find_peaks, welch  # noqa: E402
 

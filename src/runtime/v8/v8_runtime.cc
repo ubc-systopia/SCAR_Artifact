@@ -452,3 +452,37 @@ void v8_run_loop(int argc, char *argv[]) {
 	v8::V8::DisposePlatform();
 	delete create_params.array_buffer_allocator;
 }
+
+void v8_runtime_csi_victim_loop(v8::Isolate *isolate,
+                                v8::Local<v8::Context> context,
+                                v8::Local<v8::Function> repeat_func,
+                                const char *set_keypair_template) {
+	pthread_barrier_wait(sync_ctx.barrier); /* #2: victim in the loop */
+	for (;;) {
+		pthread_barrier_wait(sync_ctx.barrier); /* A */
+		sync_ctx_action_t act = sync_ctx_get_action();
+		if (act == SYNC_CTX_EXIT) {
+			break;
+		}
+		if (act == SYNC_CTX_SET_KEY) {
+			char key_script[4096];
+			snprintf(key_script,
+			         sizeof(key_script),
+			         set_keypair_template,
+			         (const char *)sync_ctx.data);
+			v8::Local<v8::String> src =
+			    v8::String::NewFromUtf8(isolate, key_script).ToLocalChecked();
+			v8::Local<v8::Script> sc =
+			    v8::Script::Compile(context, src).ToLocalChecked();
+			(void)sc->Run(context);
+		} else if (act == SYNC_CTX_START) {
+			(void)repeat_func->Call(context, context->Global(), 0, nullptr);
+			/* PS_profile_once warns at its end barrier if this has not been
+			 * published, i.e. if the profiling window closed before the
+			 * derive finished. Publishing it is what makes that check mean
+			 * something. */
+			sync_ctx_set_action(SYNC_CTX_PAUSE);
+		}
+		pthread_barrier_wait(sync_ctx.barrier); /* B */
+	}
+}

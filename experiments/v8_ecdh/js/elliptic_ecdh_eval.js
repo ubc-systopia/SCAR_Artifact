@@ -1,4 +1,5 @@
 let debug = 0;
+let tsc_arr = new Array(256).fill([]);
 
 var elliptic = (function () {
 	'use strict';
@@ -6652,12 +6653,13 @@ var elliptic = (function () {
 				t.iushrn(1)
 			)
 				bits.push(t.andln(1));
-			let tsc_arr = new Array(bits.length).fill([]);
 			for (var i = bits.length - 1; i >= 0; i--) {
-				tsc_arr[bits.length - 1 - i] = [
-					rdtscp(),
-					bits[i],
-				];
+				if(debug){
+					tsc_arr[bits.length - 1 - i] = [
+						rdtscp(),
+						bits[i],
+					];
+				}
 				if (bits[i] === 0) {
 					// N * Q + Q = ((N / 2) * Q + Q)) + (N / 2) * Q
 					a = a.diffAdd(b, c);
@@ -6671,9 +6673,6 @@ var elliptic = (function () {
 				}
 			}
 
-			for (var i = 0; i < bits.length; ++i) {
-				if (debug) print(tsc_arr[i]);
-			}
 			return b;
 		};
 

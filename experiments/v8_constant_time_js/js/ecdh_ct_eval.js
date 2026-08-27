@@ -137,7 +137,7 @@ var elliptic = (function () {
 					/*
 					 If returnLeft, mask = 0xFFFFFFFF; else, mask = 0x00000000;
 					 */
-					var mask = -(returnLeft & 1) & 0xffffffff;
+					var mask = -!!returnLeft & 0xffffffff;
 					return right ^ ((left ^ right) & mask);
 				};
 
