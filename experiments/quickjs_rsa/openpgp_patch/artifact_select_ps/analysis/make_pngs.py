@@ -1,4 +1,4 @@
-"""Render each Bokeh figure to its own PNG, for embedding in EXPLANATION.md.
+"""Render each Bokeh figure to its own PNG.
 
 The interactive versions live in results/figures_<trace>.html; these are the
 static copies the markdown shows inline. Needs bokeh, numpy and playwright:

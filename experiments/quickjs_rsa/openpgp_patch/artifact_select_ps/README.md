@@ -21,8 +21,6 @@ results/figures_r0.html      interactive figures (pan, zoom, hover)
 results/expected_output.txt  reference output of reproduce.py
 data/traces/r{0..4}.out      five Prime+Scope traces of the bf_logic_or line,
                              one signature each
-data/traces_and_line/        three traces of the bf_logic_and line, for the
-                             line-attribution check
 victim/openpgp_select_rsa.js       victim entry point
 victim/openpgp_select_patched.js   OpenPGP.js 5.11.2 with the patch applied
 victim/selectBigInt.mjs            the proposed constant-time selection

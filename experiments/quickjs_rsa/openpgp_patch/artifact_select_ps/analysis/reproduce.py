@@ -1,9 +1,9 @@
-"""Regenerate every table in REPORT.md section 5.2.5 from the included traces.
+"""Regenerate every result table from the included traces.
 
 Usage:  python3 analysis/reproduce.py [--traces DIR]
         python3 analysis/reproduce.py --pool DIR [evaluate_pool.py options]
             regenerates the multi-key, multi-run tables instead (100 keys x
-            128 runs in REPORT.md); defers entirely to evaluate_pool.py, see
+            128 runs); defers entirely to evaluate_pool.py, see
             that file for the analysis (voting, anchor tiers, runs-required).
 """
 import argparse

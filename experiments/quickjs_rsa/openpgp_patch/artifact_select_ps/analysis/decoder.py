@@ -2,7 +2,7 @@
 
 Recovers exponent bits from the interval between paired accesses to the
 bf_logic_or cache line -- which also holds bf_rint, so the trace is both (see
-README.md, "The watched line is not exclusive to `|`"). See REPORT.md sections
+README.md, "The watched line is not exclusive to `|`"). See the paper, §4.2,
 5.2.4 and 5.2.5.
 
 Depends only on numpy. Trace format is one line per probe record, columns

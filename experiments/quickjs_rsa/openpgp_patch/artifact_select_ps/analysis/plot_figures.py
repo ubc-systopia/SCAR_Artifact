@@ -1,4 +1,4 @@
-"""Bokeh figures for EXPLANATION.md, generated from the shipped traces.
+"""Bokeh figures generated from the shipped traces.
 
 Writes a single standalone HTML file with five linked-panel figures:
 

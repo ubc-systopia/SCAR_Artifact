@@ -1,4 +1,4 @@
-"""Check the decoder against the numbers published in REPORT.md.
+"""Check the decoder against the published numbers.
 
 Exits non-zero if any published value is not reproduced. Correlations and
 accuracies must match to within 0.001; counts must match exactly.
@@ -110,7 +110,7 @@ def main():
     if failures:
         print(f"FAILED: {len(failures)} check(s): {', '.join(failures)}")
         return 1
-    print("All checks passed. REPORT.md numbers reproduced.")
+    print("All checks passed. Published numbers reproduced.")
     return 0
 
 

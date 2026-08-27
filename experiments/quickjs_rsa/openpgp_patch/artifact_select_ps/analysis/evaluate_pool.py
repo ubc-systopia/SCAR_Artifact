@@ -1,6 +1,6 @@
 """Comprehensive key-pool evaluation for the SELECT-patch Prime+Scope attack.
 
-Extends the single-key, five-trace evaluation of reproduce.py/REPORT.md 5.2.5
+Extends the single-key, five-trace evaluation of reproduce.py
 to many keys and many runs per key, in the shape of the section 5.1 key-pool
 result (evaluation/extract_openpgp_rsa.py): per-bit voting across repeated
 runs with a confidence band, bits outside the band marked unknown, and
@@ -18,7 +18,7 @@ than hidden:
     decoder.best_anchor, which resolves the anchor from the known exponent
     and is reported only as an upper bound on what a resolved anchor buys.
 
-  - REPORT.md 5.2.5 already found that repeating the attack does not improve
+  - reproduce.py already finds that repeating the attack does not improve
     it on 5 traces of one key, because the errors are shared rather than
     independent. This script's per-key voting will most likely reproduce
     that finding at pool scale; §"voting vs best single trace" below checks
