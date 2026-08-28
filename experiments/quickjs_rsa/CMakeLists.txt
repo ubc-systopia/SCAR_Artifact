@@ -6,16 +6,8 @@ add_executable(quickjs_rsa_key_pool quickjs_rsa_key_pool.c)
 
 target_link_libraries(quickjs_rsa_key_pool PRIVATE utils prime_probe quickjs_runtime)
 
-add_executable(quickjs_select_fr openpgp_patch/quickjs_select_fr.c)
+add_executable(quickjs_bigint_select_rsa openpgp_patch/quickjs_bigint_select_rsa.c)
 
-target_link_libraries(quickjs_select_fr PRIVATE utils flush_reload prime_probe quickjs_runtime)
+target_include_directories(quickjs_bigint_select_rsa PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 
-add_executable(quickjs_select_rsa_fr openpgp_patch/quickjs_select_rsa_fr.c)
-
-target_link_libraries(quickjs_select_rsa_fr PRIVATE utils flush_reload prime_probe quickjs_runtime)
-
-add_executable(quickjs_select_rsa_ps openpgp_patch/quickjs_select_rsa_ps.c)
-
-target_include_directories(quickjs_select_rsa_ps PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
-
-target_link_libraries(quickjs_select_rsa_ps PRIVATE utils prime_probe quickjs_runtime)
+target_link_libraries(quickjs_bigint_select_rsa PRIVATE utils prime_probe quickjs_runtime)
