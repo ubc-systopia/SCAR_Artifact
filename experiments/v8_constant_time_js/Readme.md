@@ -27,3 +27,9 @@ To print the per-key statistics:
 python experiments/v8_constant_time_js/evaluation/extract_v8_ctjs_ecdh.py \
     --all_keys build/experiments/v8_constant_time_js/output
 ```
+
+## Instruction trace of the handlers
+
+```bash
+experiments/v8_constant_time_js/trace/trace_ct_select.sh
+```
