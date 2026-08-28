@@ -43,7 +43,7 @@ It times every selector in `js/impl/` on both QuickJS and V8 and writes
 `results/<engine>_<impl>.csv`. To analyse them and draw the paper's figure:
 
 ```bash
-python3 evaluation/plot_dist_paper.py
+python3 evaluation/plot_violin.py
 ```
 
 That writes `results/selectbigint_timing_99.pdf`.
@@ -52,9 +52,8 @@ That writes `results/selectbigint_timing_99.pdf`.
 
 A Prime+Scope attack monitoring a single cache line shared by the handlers used
 inside the selector and by `modExp`, reading the secret bit from the interval
-between hits. No cache-set identification is performed.
+between hits.
 
-The 100 keys x 128 signatures behind the paper's numbers:
 
 ```bash
 cd SCAR_Artifact
@@ -69,6 +68,6 @@ python3 experiments/quickjs_rsa/openpgp_patch/evaluation/evaluate_pool.py \
 ```
 
 ```bash
-python3 experiments/quickjs_rsa/openpgp_patch/evaluation/plot_gap_paper.py \
+python3 experiments/quickjs_rsa/openpgp_patch/evaluation/plot_gap.py \
     --traces build/output/quickjs_bigint_select_rsa/<key directory>
 ```

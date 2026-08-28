@@ -1,45 +1,5 @@
-"""Comprehensive key-pool evaluation for the SELECT-patch Prime+Scope attack.
-
-Evaluates many keys and many runs per key, in the shape of the key-pool
-result (evaluation/extract_openpgp_rsa.py): per-bit voting across repeated
-runs with a confidence band, bits outside the band marked unknown, and
-coverage / runs-required statistics reported as min/median/max across keys.
-
-Two things differ from that reference on purpose, and are reported rather
-than hidden:
-
-  - the decoder needs one more piece of information per trace than section
-    5.1's does: which loop iteration the first recovered pair belongs to (the
-    "anchor", decoder.assign_indices). It is one integer per trace out of a
-    handful of candidates, and it is resolved here against the known exponent
-    (decoder.best_anchor). That stands in for the check a real attacker
-    performs anyway -- trying each candidate key against a known signature --
-    but it is an oracle, so every number below is an upper bound in that one
-    specific respect.
-
-  - the single-key analysis already finds that repeating the attack does not improve
-    it on 5 traces of one key, because the errors are shared rather than
-    independent. This script's per-key voting will most likely reproduce
-    that finding at pool scale; §"voting vs best single trace" below checks
-    it directly instead of assuming it.
-
-Usage:
-    python3 evaluate_pool.py --pool DIR [--runs N] [--band LOW HIGH]
-                              [--jobs N] [--out CSV]
-
-DIR is the quickjs_bigint_select_rsa output root, holding one subdirectory per
-key: quickjs_bigint_select_rsa_key<NNNNN>_r<RRRRR>/r*.out[.gz].
-"""
 import os
 
-# Must be set before numpy is imported (and before worker processes are
-# forked, which inherit the environment): the work here is parsing trace
-# files and taking medians, but OpenBLAS defaults to spawning up to 64
-# threads per process regardless. With --jobs worker processes each doing
-# that, the pinned cores are oversubscribed several times over and wall time
-# roughly doubles for no benefit -- there's no matrix work here at all. One
-# thread per process, --jobs processes, is the actual parallelism this
-# script wants (the pool is I/O bound on trace parsing).
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
@@ -55,7 +15,7 @@ import numpy as np
 
 import decoder as D
 
-DEFAULT_BAND = (0.90, 0.95)  # low -> predict 0, high -> predict 1; REPORT 5.1's band.
+DEFAULT_BAND = (0.90, 0.95)
 DEFAULT_TARGET_COVERAGE = 0.99
 DEFAULT_RUNS_REPEATS = 5
 
@@ -63,12 +23,6 @@ KEY_DIR_RE = re.compile(r"quickjs_bigint_select_rsa_key(\d+)_r(\d+)$")
 
 
 def find_key_dirs(pool_dir, runs=None):
-    """Map key_id -> chosen trace directory under pool_dir.
-
-    Multiple r-counts can exist for the same key (e.g. an earlier pilot run
-    left key00000_r00004 alongside the full key00000_r00128). Prefer the
-    directory matching --runs if given, else the one with the most runs.
-    """
     candidates = {}
     for d in Path(pool_dir).iterdir():
         if not d.is_dir():
@@ -93,19 +47,10 @@ def find_key_dirs(pool_dir, runs=None):
 def trace_files(key_dir):
     return sorted(key_dir.glob("r*.out*"))
 
-
-# A handful of pool traces come back with almost no wide pairs at all (seen:
-# runs of consecutive traces with 1, 8, 94, 171 pairs against a normal ~4000)
-# -- some transient recording problem, not a slow trace. A period taken from
-# a handful of spacings is meaningless and propagates silently into garbage
-# indices and votes, so traces this thin are dropped before decoding.
 MIN_WIDE_PAIRS = 100
 
 
 def _process_trace(path):
-    """Worker: parse one trace and split it into pairs. This is the expensive
-    step (parsing ~700 KB of text per trace), so it's the unit of
-    parallelism."""
     ts, _ = D.load_trace(path)
     start_t, wide_gap, _, alternation = D.wide_narrow(ts)
     return {
@@ -118,8 +63,6 @@ def _process_trace(path):
 
 
 def process_key(key_id, paths, jobs, executor=None):
-    """Decode every trace of one key. Returns (list of per-trace dicts; count
-    of traces dropped as degenerate, see MIN_WIDE_PAIRS)."""
     lsb_first, _ = D.load_exponent(key_id)
     n_bits = len(lsb_first)
 
@@ -151,15 +94,6 @@ def process_key(key_id, paths, jobs, executor=None):
 
 
 def vote(traces, n_bits, band=DEFAULT_BAND, order=None):
-    """Per-bit vote over a set of decoded traces (RSA_KEY.merge_inference /
-    check_accuracy in evaluation/extract_openpgp_rsa.py, adapted to this
-    decoder's index/gap representation).
-
-    order: optional sequence of indices into `traces` controlling which/how
-    many traces are folded in and in what order (used by runs_required).
-    Returns a dict: known, unknown, wrong, obs (traces folded in), coverage,
-    known_acc, ppr (per-bit positive rate), tot (per-bit observation count).
-    """
     low, high = band
     ones = np.zeros(n_bits, dtype=np.int64)
     tot = np.zeros(n_bits, dtype=np.int64)
@@ -197,11 +131,6 @@ def vote(traces, n_bits, band=DEFAULT_BAND, order=None):
 def runs_required(traces, n_bits, band=DEFAULT_BAND,
                    target=DEFAULT_TARGET_COVERAGE, repeats=DEFAULT_RUNS_REPEATS,
                    seed=0):
-    """Smallest number of runs (shuffled order, repeated) whose vote reaches
-    `target` coverage. Returns (values, reached) -- one value per repeat;
-    `reached[i]` is False if all traces were used and target was still not
-    met, in which case values[i] is len(traces) (a lower bound, not a hit).
-    """
     rng = random.Random(seed)
     low, high = band
     n = len(traces)
@@ -387,7 +316,6 @@ def main():
         print(f"\nwrote {args.out}")
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

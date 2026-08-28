@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-#
-# Data collection for the OpenPGP.js constant-time modExp patch timing eval.
-#
-# Raw per-call timing CSVs are written to ./results/<engine>_<impl>.csv.
-#
-# Usage:
-#   ./run_eval.sh [-n samples] [-b bits] [-s seed]
-#                 [-c cpu]                         # taskset CPU (default 11)
-#
 set -euo pipefail
 
-# ---- config --------------------------------------------------------------
+usage() {
+	cat <<'EOF'
+Times every selector in js/impl/ on QuickJS and V8, writing raw per-call
+timing CSVs to results/<engine>_<impl>.csv.
+
+Usage: ./run_eval.sh [-n samples] [-b bits] [-s seed] [-c cpu]
+
+  -n  timed measurements, cond drawn per measurement (default 200000)
+  -b  operand bit-length (default 4095)
+  -s  PRNG seed, so operands match across engines (default 1)
+  -c  CPU to pin to with taskset (default 11)
+
+Override the engine binaries with QJS_BIN and D8_BIN.
+EOF
+}
+
 SAMPLES="${SAMPLES:-200000}"
 BITS="${BITS:-4095}"
 SEED="${SEED:-1}"
@@ -18,10 +24,8 @@ PIN_CPU="${PIN_CPU:-11}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Project root: openpgp_patch -> quickjs_rsa -> experiments -> SCAR_Artifact
 ROOT="$(cd "$PATCH_DIR/../../.." && pwd)"
 
-# Engine binaries
 QJS_BIN="${QJS_BIN:-$ROOT/third_party/quickjs/qjs}"
 D8_BIN="${D8_BIN:-$ROOT/third_party/v8/out.gn/x64.release/d8}"
 
@@ -31,7 +35,7 @@ while getopts "n:b:s:c:h" opt; do
 		b) BITS="$OPTARG" ;;
 		s) SEED="$OPTARG" ;;
 		c) PIN_CPU="$OPTARG" ;;
-		h) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		h) usage; exit 0 ;;
 		*) echo "bad option" >&2; exit 1 ;;
 	esac
 done
@@ -39,7 +43,6 @@ done
 BENCH="$PATCH_DIR/js/bench.mjs"
 RESULTS="$PATCH_DIR/results"
 
-# optional taskset
 TASKSET=""
 if command -v taskset >/dev/null 2>&1; then
 	TASKSET="taskset -c $PIN_CPU"
@@ -76,7 +79,6 @@ run_one() {
 	echo "    -> $((n - 1)) measurements"
 }
 
-# ---- collect -------------------------------------------------------------
 for p in "$PATCH_DIR"/js/impl/*.mjs; do
 	impl="$(basename "$p" .mjs)"
 	impl_module="./impl/${impl}.mjs"    # resolved relative to bench.mjs

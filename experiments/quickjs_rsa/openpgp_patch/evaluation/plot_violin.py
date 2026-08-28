@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""Paper figure: the patched `selectBigInt` still leaks the secret bit.
-
-One violin panel per engine, the two violins being the `cond` values. Each
-engine keeps its own y-axis, so the ~10x cross-engine cycle gap needs no
-shared / log / broken axis. The paper prints the QuickJS panel alone and
-without a caption; --engines and --annotate widen that back out. Reads the
-`selectBigInt` CSVs written by run_eval.sh.
-
-    venv/bin/python plot_dist_paper.py        # -> ../results/selectbigint_timing_99.pdf
-    venv/bin/python plot_dist_paper.py --export html,svg   # also emit HTML + SVG
-"""
 import argparse
 import math
 import os
@@ -19,28 +8,19 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-
-# ---- analysis --------------------------------------------------------------
-# A run is flagged as leaking only if the single-sample distinguishability is
-# well clear of chance. 0.1 leaves headroom over the quantization noise that
-# nudges the non-leaking control off 0.5 (heavily-discretized ~hundred-cycle
-# reference returns), while the real leaks sit at AUC ~1.0.
 LEAK_AUC_MARGIN = 0.1
 
 def load_csv(path):
-    """Return (cond array, cycles array) skipping the '#' header line."""
     df = pd.read_csv(path, comment="#")
     return df["cond"].to_numpy(), df["cycles"].to_numpy(dtype=float)
 
 def trim(x, pct):
-    """Drop samples above the (100-pct) percentile to remove interrupt tails."""
     if len(x) == 0:
         return x
     hi = np.percentile(x, 100.0 - pct)
     return x[x <= hi]
 
 def _rankdata_avg(a):
-    """Average ranks (1-based) with tie handling — scipy.rankdata equivalent."""
     a = np.asarray(a)
     sorter = np.argsort(a, kind="mergesort")
     inv = np.empty(len(a), dtype=np.intp)
@@ -52,11 +32,6 @@ def _rankdata_avg(a):
     return 0.5 * (counts[dense] + counts[dense - 1] + 1)
 
 def auc_distinguish(x0, x1):
-    """AUC = P(X1 > X0) via Mann-Whitney U, plus a tie-corrected normal p-value.
-
-    AUC = 0.5 means the secret bit cannot be told from a single timing sample;
-    AUC -> 1.0 (or 0.0) means perfect single-shot distinguishability.
-    """
     n0, n1 = len(x0), len(x1)
     if n0 == 0 or n1 == 0:
         return float("nan"), float("nan")
@@ -73,13 +48,13 @@ def auc_distinguish(x0, x1):
     if var <= 0:
         return auc, float("nan")
     z = (u1 - mu) / math.sqrt(var)
-    p = math.erfc(abs(z) / math.sqrt(2.0))  # two-sided
+    p = math.erfc(abs(z) / math.sqrt(2.0))
     return auc, p
 
 def analyse(path, trim_pct, warmup, trim_above=None):
     cond, cyc = load_csv(path)
-    cond, cyc = cond[warmup:], cyc[warmup:]  # drop cold/JIT-warmup transient
-    if trim_above is not None:  # hard cycle cap (drop interrupt/GC spikes)
+    cond, cyc = cond[warmup:], cyc[warmup:]
+    if trim_above is not None:
         keep = cyc <= trim_above
         cond, cyc = cond[keep], cyc[keep]
     x0 = trim(cyc[cond == 0], trim_pct)
@@ -96,22 +71,16 @@ def analyse(path, trim_pct, warmup, trim_above=None):
         "auc": auc, "mwu_p": p,
     }
 
-
-# ---- figure ---------------------------------------------------------------
-# Per-secret-bit palette.
-COND_COLOR = {0: "#1071e5", 1: "#fc9432"}    # CornflowerBlue / BurntOrange
-VIOLIN_CAT = {0: "cond = 0", 1: "cond = 1"}  # x-axis categories
+COND_COLOR = {0: "#1071e5", 1: "#fc9432"}
+VIOLIN_CAT = {0: "cond = 0", 1: "cond = 1"}
 COND_LABEL = {0: "secret bit = 0", 1: "secret bit = 1"}
 
-# Engines and panel titles.
 PANELS = [("quickjs", "QuickJS - Interpreter"), ("v8", "V8 - JIT (TurboFan)")]
-# The paper prints the QuickJS panel alone; --engines widens it back out.
 PAPER_ENGINES = ["quickjs"]
 
-# Analysis + figure constants (edit here if needed).
-TRIM_PCT = 1.0       # drop this % upper tail per group
-TRIM_ABOVE = None    # or an absolute cycle cap
-WARMUP = 200         # discard first N samples
+TRIM_PCT = 1.0
+TRIM_ABOVE = None
+WARMUP = 200
 WIDTH, HEIGHT = 400, 250
 
 
@@ -122,24 +91,17 @@ def _rgba(hexc, a):
 
 
 def _darken(hexc, f):
-    """Scale an #rrggbb colour toward black by factor f (0=black, 1=unchanged)."""
     h = hexc.lstrip("#")
     r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
     return f"rgb({int(r * f)},{int(g * f)},{int(b * f)})"
 
 
 def build_violin(cells, annotate=False):
-    """cells: list of (title, res); one violin panel per engine.
-
-    Each violin carries a thin, unfilled Tukey box (median + IQR) inside it.
-    """
-    cells = sorted(cells, key=lambda c: c[1]["median0"])  # smaller cycles left
+    cells = sorted(cells, key=lambda c: c[1]["median0"])
     rng = np.random.default_rng(0)
     fig = make_subplots(rows=1, cols=len(cells), horizontal_spacing=0.13)
     for col, (title, res) in enumerate(cells, start=1):
         groups = [(c, a) for c, a in ((0, res["x0"]), (1, res["x1"])) if len(a)]
-        # Clip the thin outlier tails so the bodies aren't squashed into spikes,
-        # and crop the y-axis to the kept range.
         lo = min(np.percentile(a, 0.5) for _, a in groups)
         hi = max(np.percentile(a, 99.5) for _, a in groups)
         for cond, arr in groups:
@@ -220,7 +182,6 @@ def main():
     fig = build_violin(cells, annotate=args.annotate)
     os.makedirs(args.out_dir, exist_ok=True)
     base = os.path.join(args.out_dir, args.out or "selectbigint_timing_99")
-    # PDF by default; HTML/SVG opt-in via --export. Dedupe, keep order.
     formats, seen = [], set()
     for fmt in ["pdf", *(f.strip() for f in args.export.split(",") if f.strip())]:
         if fmt not in seen:
@@ -234,10 +195,9 @@ def main():
             else:
                 fig.write_image(out, format=fmt, scale=2)
             print(f"[*] wrote {out}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[i] {fmt.upper()} export skipped ({type(e).__name__}); "
                   "needs a system chromium on PATH (pacman -S chromium).")
-
 
 if __name__ == "__main__":
     main()

@@ -1,32 +1,3 @@
-"""Self-contained decoder for the Prime+Scope traces of SELECT-patched modExp.
-
-Recovers exponent bits from the interval between paired accesses to the
-bf_logic_or cache line -- which also holds bf_rint, so the trace is both (see
-README.md, "The watched line is not exclusive to `|`"). See the paper, §4.2,
-5.2.4 and 5.2.5.
-
-The whole decoder is four steps, each one line of arithmetic:
-
-  1. trim the trace to the region where signing actually happens
-     (signing_window);
-  2. split accesses into pairs at the long gaps between iterations, and keep
-     the wider half of the pairs -- those are SELECT (wide_narrow);
-  3. index the pairs by a straight line, index = round((t - t0) / P), with P
-     the median spacing between pairs (loop_period, assign_indices);
-  4. call the bit 1 where the pair's gap is above the median gap (decode).
-
-It is deliberately simple rather than maximally accurate. Step 3 in
-particular estimates the period well enough to keep phase over most of a
-trace but not all of it, which is where most of the lost accuracy goes; see
-EXPLANATION.md, "The hard part: which bit is which".
-
-Depends only on numpy. Trace format is one line per probe record, columns
-separated by whitespace, each column "tsc:latency". The current attacker probes
-one line by default, so traces have a single column. Traces recorded by the
-earlier two-probe attacker carry a dropped bf_add_internal column first, so the
-signal is the last column (see signal_slot). Exception: traces from a
-PROBE_LINE=both run put bf_logic_and last, so pass slot=0 explicitly for those.
-"""
 import gzip
 import json
 from pathlib import Path
@@ -37,12 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 TRACE_DIR = None
 POOL_KEY_DIR = ROOT.parent / "rsa_key_pool"
 
-# Splits the two gap scales. Every observed gap is either < 35,000 or
-# > 270,000 cycles, so this is read off the data, not tuned.
 PAIR_SPLIT_CYCLES = 100_000
 
 def signal_slot(path):
-    """Column index of the bf_logic_or probe: the last one present."""
     opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rt") as fh:
         for line in fh:
@@ -53,7 +21,6 @@ def signal_slot(path):
 
 
 def load_trace(path, slot=None):
-    """Return (timestamps, latencies) for one probe slot, sorted by timestamp."""
     if slot is None:
         slot = signal_slot(path)
     opener = gzip.open if str(path).endswith(".gz") else open
@@ -75,22 +42,12 @@ def load_trace(path, slot=None):
 
 
 def signing_window(ts, bins=40, frac=0.25):
-    """Bounds of the dense region where signing occurs.
-
-    The probe loop runs for the whole cycle budget, so the tail of the trace is
-    post-signing idle. Keep histogram bins holding at least `frac` of the
-    busiest bin.
-    """
     hist, edges = np.histogram(ts, bins=bins)
     keep = np.where(hist >= frac * hist.max())[0]
     return edges[keep[0]], edges[keep[-1] + 1]
 
 
 def wide_narrow(ts):
-    """Split accesses into pairs and separate the wide and narrow groups.
-
-    Returns (wide_start_times, wide_gaps, narrow_gaps, alternation_rate).
-    """
     lo, hi = signing_window(ts)
     ts = ts[(ts >= lo) & (ts <= hi)]
 
@@ -108,31 +65,10 @@ def wide_narrow(ts):
 
 
 def loop_period(t):
-    """Duration of one modExp loop iteration, in cycles.
-
-    Every iteration emits one wide pair, so consecutive pair start times are
-    one period apart wherever no iteration was missed. Missed iterations make
-    some spacings 2P or 3P, which pull the mean but not the median -- so the
-    median spacing is the period.
-    """
     return float(np.median(np.diff(t)))
 
 
 def assign_indices(t, n_bits, anchor=0):
-    """Map wide-pair timestamps to exponent-bit indices.
-
-    The model is one straight line through the pair start times,
-    t = index * P + t[0], with P the median iteration time. It has to be a
-    global line: counting forward from the previous pair loses a bit for every
-    missed loop iteration, and about 100 of the 4094 iterations do not produce
-    a clean pair (REPORT 5.2.4).
-
-    `anchor` shifts every index by a constant. It is not determined by the
-    trace: the line fixes the spacing and the phase, but which loop iteration
-    the first pair belongs to is one unknown integer for the whole trace, and
-    accuracy is sharply peaked in it. An attacker carries the handful of
-    candidates forward rather than resolving it here.
-    """
     period = loop_period(t)
     idx = np.round((t - t[0]) / period).astype(int)
     idx += anchor - idx.min()
@@ -141,14 +77,6 @@ def assign_indices(t, n_bits, anchor=0):
 
 
 def best_anchor(t, wide_gap, n_bits, truth_lsb_first, span=2):
-    """Pick the anchor offset, scoring candidates against the known exponent.
-
-    Only for evaluating the artifact: it resolves the one integer the trace
-    does not determine. Returns (anchor, accuracy) for the best candidate.
-    This is an oracle, and stands in for what a real attacker does with the
-    same handful of candidates -- try each implied key against a known
-    signature, an O(span) check that needs no ground truth.
-    """
     predicted = (wide_gap > np.median(wide_gap)).astype(int)
     scores = {}
     for cand in range(-span, span + 1):
@@ -162,7 +90,6 @@ def best_anchor(t, wide_gap, n_bits, truth_lsb_first, span=2):
 
 
 def key_file(key_id=0):
-    """Path to the JSON key file for key_id, from the shared RSA key pool."""
     candidate = POOL_KEY_DIR / f"rsa_key_{key_id}.json"
     if candidate.exists():
         return candidate
@@ -170,7 +97,6 @@ def key_file(key_id=0):
 
 
 def load_exponent(key_id=0):
-    """Return (bits_lsb_first, bits_msb_first) for the given key's `d`."""
     key = json.loads(key_file(key_id).read_text())
     d = int(key["d"], 16)
     msb_first = np.array([int(c) for c in bin(d)[2:]], dtype=np.int64)
@@ -178,11 +104,6 @@ def load_exponent(key_id=0):
 
 
 def decode(path, key_id=0, anchor=None):
-    """Decode one trace. Returns a dict of per-trace results.
-
-    anchor=None (the default) resolves the anchor with the ground-truth
-    oracle (best_anchor). Pass an explicit integer to decode without it.
-    """
     ts, _ = load_trace(path)
     lsb_first, msb_first = load_exponent(key_id)
     n_bits = len(lsb_first)
@@ -235,9 +156,20 @@ def trace_paths():
 
 
 def trace_path(name):
-    """Resolve a trace by stem, accepting either a raw .out or a gzipped one."""
     directory = _require_trace_dir()
     for candidate in (directory / f"{name}.out", directory / f"{name}.out.gz"):
         if candidate.exists():
             return candidate
     raise FileNotFoundError(f"no trace {name}.out[.gz] in {directory}")
+
+
+def decode_with_indices(path):
+    result = decode(path)
+    timestamps, _ = load_trace(path)
+    lsb_first, _ = load_exponent()
+    start_t, wide_gap, _, _ = wide_narrow(timestamps)
+    idx, valid, _ = assign_indices(start_t, len(lsb_first),
+                                   anchor=result["anchor"])
+    result.update(wide_start=start_t, wide_gap=wide_gap, idx=idx, valid=valid,
+                  lsb_first=lsb_first)
+    return result
