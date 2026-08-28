@@ -644,13 +644,7 @@ def summarize_pool(reports):
     return "\n".join(lines)
 
 
-def pool_optimal_band(skeys, w=None):
-    """Find the SINGLE confidence band (low, high) that minimises the pool-wide
-    cost unknown + w * wrong, applied uniformly to every key. A real attack does
-    not know the key, so it cannot tune a band per key; this picks the one fixed
-    band that is best on average across the whole pool. w trades the two off:
-    large w keeps wrong ~0 (more bits unknown), small w accepts a rare systematic
-    false-positive to recover more bits."""
+def optimal_band(skeys, w=None):
     if w is None:
         w = wrong_infer_weight
     pprs, truths = [], []
@@ -687,7 +681,7 @@ def pool_optimal_band(skeys, w=None):
 def resolve_band(skeys):
     if bit_infer_thres is not None:
         return bit_infer_thres
-    band = pool_optimal_band(skeys)
+    band = optimal_band(skeys)
     print(f"Adaptive: optimal band over {len(skeys)} key(s) = "
           f"[{band[0]}, {band[1]}] (w={wrong_infer_weight})")
     return band
@@ -810,7 +804,7 @@ if __name__ == "__main__":
         "--sample-interval",
         type=int,
         help="Override FR_sample_interval (TSC cycles) for the STFT boundary "
-        "detector, e.g. to track a swept quickjs_rsa_fr WAITING_TIME",
+        "detector",
     )
 
     args = parser.parse_args()

@@ -6,10 +6,6 @@ add_executable(quickjs_rsa_key_pool quickjs_rsa_key_pool.c)
 
 target_link_libraries(quickjs_rsa_key_pool PRIVATE utils prime_probe quickjs_runtime)
 
-add_executable(quickjs_rsa_fr quickjs_rsa_fr.c)
-
-target_link_libraries(quickjs_rsa_fr PRIVATE utils flush_reload prime_probe quickjs_runtime)
-
 add_executable(quickjs_select_fr openpgp_patch/quickjs_select_fr.c)
 
 target_link_libraries(quickjs_select_fr PRIVATE utils flush_reload prime_probe quickjs_runtime)

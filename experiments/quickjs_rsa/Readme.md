@@ -33,29 +33,6 @@ cd SCAR_Artifact
 python experiments/quickjs_rsa/evaluation/extract_openpgp_rsa.py -p build/output/quickjs_rsa_key_pool --at PS
 ```
 
-### Flush+Reload (single key)
-
-`quickjs_rsa_fr` is a Flush+Reload attacker against the same `goto8`/`sar`
-bytecode-handler cache lines, exploiting the fact that `libquickjs.so` is a
-shared library mapped by both the victim and the attacker. Unlike the Prime+Scope
-binaries above it only attacks the default key (`KEY_ID=0`) and needs no
-eviction-set calibration:
-
-```bash
-cd SCAR_Artifact/build
-taskset -c 1,3,5,7,9,11,13,15 ./src/runtime/quickjs/quickjs_rt ../experiments/quickjs_rsa/js/openpgp_rsa.js
-```
-
-```bash
-cd SCAR_Artifact/build
-taskset -c 1,3,5,7,9,11,13,15 ./experiments/quickjs_rsa/quickjs_rsa_fr
-```
-
-```bash
-cd SCAR_Artifact
-python experiments/quickjs_rsa/evaluation/extract_openpgp_rsa.py -f build/output/quickjs_openpgp_rsa_fr_r00001/r0.out --at FR
-```
-
 ### Key Pool Generation
 
 ```bash
