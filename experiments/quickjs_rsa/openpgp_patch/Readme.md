@@ -32,11 +32,11 @@ so the two values of the secret bit still differ in execution time.
 ## Layout
 
 ```text
-evaluation/     the run scripts and the analysis they call
+evaluation/     the run scripts, the decoder, and the analysis they call
 js/impl/        the selection implementations run_eval.sh times
 js/             the victim scripts and the measurement harnesses
-results/        collected CSVs and the paper figure
-artifact_bigint_select/   self-contained copy of Part 2, traces included
+data/           five shipped Prime+Scope traces and the ground-truth key
+results/        collected CSVs, the paper figure, reference decoder output
 ```
 
 ## Part 1: the timing distributions
@@ -74,13 +74,28 @@ NUM_KEYS=100 VICTIM_RUNS=128 \
   experiments/quickjs_rsa/openpgp_patch/evaluation/run_bigint_select_rsa_pool.sh
 ```
 
-Traces land in `build/output/quickjs_bigint_select_rsa/`. Decode a capture with the
-analysis in `artifact_bigint_select/`:
+Traces land in `build/output/quickjs_bigint_select_rsa/`. Decode a capture with:
 
 ```bash
-python3 experiments/quickjs_rsa/openpgp_patch/artifact_bigint_select/analysis/reproduce.py \
+python3 experiments/quickjs_rsa/openpgp_patch/evaluation/reproduce.py \
     --traces build/output/quickjs_bigint_select_rsa/<key directory>
 ```
+
+### Checking the decode without capturing
+
+Five Prime+Scope traces of one signature each ship in `data/traces/`, so the
+decoder can be checked without the measurement hardware. Needs only numpy and
+takes about ten seconds:
+
+```bash
+cd experiments/quickjs_rsa/openpgp_patch
+./evaluation/run_offline_verify.sh
+```
+
+`reproduce.py` prints the result tables and `verify.py` asserts 42 values
+against `results/expected_output.txt`, exiting non-zero on any mismatch. It
+checks the exact numbers obtained from the shipped traces, so it will not pass
+on newly captured ones.
 
 ## Analysis tooling
 
