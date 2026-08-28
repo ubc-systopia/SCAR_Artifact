@@ -1,14 +1,16 @@
 import argparse
+import concurrent.futures
 import glob
 import json
 import os
+import statistics
 import sys
 
 import numpy as np
 from collections import namedtuple
 
 import utils
-from utils import lat_to_hit
+from utils import find_project_root, lat_to_hit
 
 
 ratio_thresh = 0.60
@@ -326,54 +328,6 @@ def candidate_contrast(score):
     return (c1 - c0) / max(float(sd), 1e-6)
 
 
-def count_emissions(K, bits, cap, prior):
-    e = np.full((2, 2, cap + 1), prior)
-    n = K.shape[1]
-    for b in (0, 1):
-        for pb in (0, 1):
-            idx = [i for i in range(1, n) if bits[i] == b and bits[i - 1] == pb]
-            if idx:
-                e[b, pb] += np.bincount(K[:, idx].ravel(), minlength=cap + 1)
-    return np.log(e / e.sum(axis=2, keepdims=True))
-
-
-def viterbi_counts(L, posteriors=False):
-    n = L.shape[0]
-    lp = np.full((n, 2), -np.inf)
-    bp = np.zeros((n, 2), dtype=int)
-    lp[0] = np.logaddexp(L[0, :, 0], L[0, :, 1]) - np.log(2.0)
-    for i in range(1, n):
-        for b in (0, 1):
-            cand = lp[i - 1] + L[i, b, :]
-            bp[i, b] = int(np.argmax(cand))
-            lp[i, b] = cand[bp[i, b]]
-    z = np.zeros(n, dtype=int)
-    z[n - 1] = int(np.argmax(lp[n - 1]))
-    for i in range(n - 1, 0, -1):
-        z[i - 1] = bp[i, z[i]]
-    if not posteriors:
-        return z, None
-
-    def lse(a, axis=None):
-        m = np.max(a, axis=axis, keepdims=True)
-        return (m + np.log(np.sum(np.exp(a - m), axis=axis, keepdims=True))
-                ).squeeze(axis)
-
-    f = np.full((n, 2), -np.inf)
-    f[0] = lp[0]
-    for i in range(1, n):
-        for b in (0, 1):
-            f[i, b] = lse(f[i - 1] + L[i, b, :])
-    bwd = np.zeros((n, 2))
-    for i in range(n - 2, -1, -1):
-        for pb in (0, 1):
-            bwd[i, pb] = lse(np.array([L[i + 1, b, pb] + bwd[i + 1, b]
-                                       for b in (0, 1)]))
-    post = f + bwd
-    post -= lse(post, axis=1)[:, None]
-    return z, np.exp(post[:, 0])
-
-
 def majority(keys):
     n = min(len(k) for k in keys)
     out = []
@@ -498,11 +452,6 @@ def viterbi_matched(f, c, h, sd, posteriors=False):
         s = prev
     if not posteriors:
         return z, None
-
-    def lse(a, axis=None):
-        m = np.max(a, axis=axis, keepdims=True)
-        m = np.where(np.isfinite(m), m, 0.0)
-        return (m + np.log(np.sum(np.exp(a - m), axis=axis, keepdims=True))).squeeze(axis)
 
     fw = np.full((n + 1, nstates), neg)
     fw[0, 0] = 0.0
@@ -901,127 +850,6 @@ class EC_KEY:
                       "profiled" if kernel is not None else "blind"),
         }
 
-    def counts_labels(self, K, margin):
-        n = self.secret_key_bits
-        if K.shape[0] < 4 or K.shape[1] < n:
-            return None, None
-        Kn = K[:, :n]
-
-        col = np.array([np.bincount(Kn[:, i], minlength=count_cap + 1)
-                        for i in range(n)], dtype=float)
-        w = (Kn.mean(axis=0) >= np.median(Kn)).astype(float)
-        p0 = p1 = None
-        for _ in range(count_em_rounds):
-            h0 = w @ col + count_prior
-            h1 = (1.0 - w) @ col + count_prior
-            p0, p1 = h0 / h0.sum(), h1 / h1.sum()
-            if p0[4:].sum() < p1[4:].sum():
-                p0, p1 = p1, p0
-                w = 1.0 - w
-            pi = min(max(float(w.mean()), 0.02), 0.98)
-            d = col @ (np.log(p0) - np.log(p1)) + np.log(pi / (1.0 - pi))
-            w_new = 1.0 / (1.0 + np.exp(-np.clip(d, -60, 60)))
-            if np.max(np.abs(w_new - w)) < 1e-6:
-                break
-            w = w_new
-
-        llr_tab = np.log(p0) - np.log(p1)
-        bits_hat = (llr_tab[Kn].sum(axis=0) > 0).astype(int)
-
-        for _ in range(count_em_rounds // 6):
-            emis = count_emissions(Kn, bits_hat, count_cap, count_prior)
-            L = np.zeros((n, 2, 2))
-            for b in (0, 1):
-                for pb in (0, 1):
-                    L[:, b, pb] = emis[b, pb][Kn].sum(axis=0)
-            new_bits, post0 = viterbi_counts(L, posteriors=True)
-            if np.array_equal(new_bits, bits_hat):
-                bits_hat = new_bits
-                break
-            bits_hat = new_bits
-        emis = count_emissions(Kn, bits_hat, count_cap, count_prior)
-        L = np.zeros((n, 2, 2))
-        for b in (0, 1):
-            for pb in (0, 1):
-                L[:, b, pb] = emis[b, pb][Kn].sum(axis=0)
-        bits_hat, post0 = viterbi_counts(L, posteriors=True)
-
-        if len(np.unique(bits_hat)) < 2:
-            return None, None
-        slot_mean = Kn.mean(axis=0)
-        hi_state = 1 if (slot_mean[bits_hat == 1].mean()
-                         > slot_mean[bits_hat == 0].mean()) else 0
-
-        marker_value = self.builtin_lines[
-            [i for i, r in enumerate(self.builtin_lines)
-             if r.role in "01"][0]].role
-        other = "1" if marker_value == "0" else "0"
-        conf = np.maximum(post0, 1.0 - post0)
-        lim = 1.0 / (1.0 + np.exp(-abs(margin)))
-        pred = [(marker_value if b == hi_state else other) if c >= lim else "u"
-                for b, c in zip(bits_hat, conf)]
-        return pred, emis
-
-    def vote_counts(self, kept, margin=None, folds=None):
-        margin = llr_margin if margin is None else margin
-        folds = llr_folds if folds is None else folds
-        if self.counts is None or not len(kept):
-            return self.vote(kept)
-        K = np.rint(np.atleast_2d(self.counts)[kept]).astype(int)
-        K = np.clip(K, 0, count_cap)
-        n = self.secret_key_bits
-        if K.shape[1] < n:
-            return self.vote(kept)
-
-        pred, emis = self.counts_labels(K, margin)
-        if pred is None:
-            return self.vote(kept)
-
-        eff_folds = folds if folds > 1 and len(kept) >= 4 * folds else 1
-        if eff_folds > 1:
-            for k in range(folds):
-                lab, _ = self.counts_labels(K[k::folds], margin)
-                if lab is None:
-                    continue
-                pred = [p if p == q and p != "u" else "u"
-                        for p, q in zip(pred, lab)]
-
-        pred = list(pred)
-        pred[n - 1] = "u"
-
-        known = correct = unknown = 0
-        for i in range(n):
-            if pred[i] == "u":
-                unknown += 1
-            else:
-                known += 1
-                correct += pred[i] == self.secret_key_bin[i]
-        return "".join(pred), {
-            "bits": n,
-            "known": known,
-            "unknown": unknown,
-            "wrong": known - correct,
-            "known_acc": correct / known if known else None,
-            "traces": len(kept),
-            "band": None,
-            "folds": eff_folds,
-            "counts_model": tuple(
-                tuple(round(float(v), 3) for v in np.exp(emis[b, pb])[:6])
-                for b in (0, 1) for pb in (0, 1)),
-        }
-
-    def profile_kernel(self, kept, taps=None):
-        taps = history_taps + 1 if taps is None else taps
-        f = self.mean_score(kept)
-        fin = np.isfinite(f)
-        g = np.where(fin, f, np.nanmedian(f[fin]))
-        marker_value = self.builtin_lines[
-            [i for i, r in enumerate(self.builtin_lines)
-             if r.role in "01"][0]].role
-        z = np.array([1.0 if b == marker_value else 0.0
-                      for b in self.secret_key_bin[:len(g)]])
-        return fit_matched_kernel(z, g[:len(z)], taps)
-
     def per_trace_accuracy(self, kept):
         return [self.agreement(self.infer_keys[i][1], self.secret_key_bin)
                 for i in kept]
@@ -1048,73 +876,103 @@ def print_key_comparison(true_bits, pred, width=60):
         print(f"          {diff}")
 
 
-def score_oracle(directory, builtin_lines, primitive, key_bits, aligned=None,
-                 period=None, offset=0, phase=0.0):
-    path = os.path.join(directory, "victim_bits.txt")
-    if not os.path.exists(path):
-        print("no victim_bits.txt in this capture (re-capture with -bits)")
-        return
-    rows = [tuple(int(x) for x in ln.split(",")) for ln in open(path)]
-    files = sorted(glob.glob(os.path.join(directory, "r*.out")),
-                   key=lambda p: int(os.path.basename(p)[1:-4]))
-    if len(rows) % len(files):
-        print(f"oracle has {len(rows)} lines, not a multiple of {len(files)} "
-              f"traces -- skipping")
-        return
-    per = len(rows) // len(files)
-    marker = [i for i, r in enumerate(builtin_lines) if r.role in "01"]
-    clock = [i for i, r in enumerate(builtin_lines) if r.role == "c"]
+def channel_counts(path):
+    marker = clock = 0
+    with open(path) as fp:
+        for line in fp:
+            for i, cell in enumerate(line.rstrip("\n").split("\t")[:2]):
+                ts, _, lat = cell.partition(":")
+                if lat and ts.isdigit() and ts != "0":
+                    if i == 0:
+                        marker += 1
+                    else:
+                        clock += 1
+    return marker, clock
 
-    slot_err, or_acc, inf_acc, best_acc, cov = [], [], [], [], []
-    for r, fp in enumerate(files):
-        blk = rows[r * per:(r + 1) * per]
-        t = np.array([x[0] for x in blk], dtype=np.int64)
-        truth = "".join(str(b) for _, b in blk)
-        cols = load_trace(fp, primitive)
-        edges = np.append(t, t[-1] + int(np.median(np.diff(t))))
 
-        def counts(idxs):
-            total = np.zeros(len(t), dtype=float)
-            for i in idxs:
-                pos = np.searchsorted(edges, cols[i], side="right") - 1
-                pos = pos[(pos >= 0) & (pos < len(t))]
-                total += np.bincount(pos, minlength=len(t))
-            return total / len(idxs) if idxs else total
+def capture_health(directory, marker_lo=250, marker_hi=650,
+                   clock_lo=300, clock_hi=1300):
+    files = sorted(glob.glob(os.path.join(directory, "r*.out")))
+    if not files:
+        return f"{directory}: no traces", False
+    counts = [channel_counts(f) for f in files]
+    marker = statistics.median(c[0] for c in counts)
+    clock = statistics.median(c[1] for c in counts)
+    why = []
+    if not marker_lo <= marker <= marker_hi:
+        why.append(f"marker {marker:.0f} outside [{marker_lo},{marker_hi}]")
+    if not clock_lo <= clock <= clock_hi:
+        why.append(f"clock {clock:.0f} outside [{clock_lo},{clock_hi}]")
+    verdict = "ok" if not why else "BAD: " + ", ".join(why)
+    return f"marker {marker:.0f} clock {clock:.0f} n {len(files)} -> {verdict}", not why
 
-        m, c = counts(marker), counts(clock) if clock else np.full(len(t), 4.0)
-        inside = sum(int(((x >= t[0]) & (x < edges[-1])).sum()) for x in cols)
-        total = sum(len(x) for x in cols)
-        cov.append(inside / total if total else 0.0)
-        lab = np.where(m / np.maximum(c, 1) >= ratio_thresh, "0", "1")
-        or_acc.append(float(np.mean([a == b for a, b in zip(lab, truth)])))
 
-        cands, _, _, tightest = decode_candidates(
-            cols, builtin_lines, per, None, 1, phase, None, period, offset)
-        if cands:
-            accs = [float(np.mean([a == b for a, b in zip(k, truth)]))
-                    for k in cands]
-            slot_err.append(int(np.argmax(accs)) - tightest)
-            name = os.path.basename(fp)
-            if aligned and name in aligned:
-                k = aligned[name]
-                inf_acc.append(float(np.mean([a == b
-                                              for a, b in zip(k, truth)])))
-            best_acc.append(max(accs))
+def decode_one_key(args):
+    directory, key_path = args
+    builtin_lines, primitive = load_builtin_lines(directory)
+    skey = EC_KEY.load(key_path, builtin_lines, primitive)
+    skey.infer_directory(directory)
+    skey.align_candidates()
+    if not skey.infer_keys:
+        return None
+    kept = skey.all_traces()
+    if primitive == "ps":
+        pred, st = skey.vote_matched(kept)
+    else:
+        pred, st = skey.vote_history(kept, llr_margin, llr_folds)
+    nbits = st["known"] + st["unknown"]
+    return {"known": st["known"], "unknown": st["unknown"], "wrong": st["wrong"],
+            "traces": st["traces"], "known_acc": st["known_acc"],
+            "coverage": 100.0 * st["known"] / nbits,
+            "fallback": "model" not in st and "counts_model" not in st}
 
-    print(f"\nORACLE ({len(files)} traces, {per} true bits each)")
-    print(f"  hits inside the ladder span: {100 * np.mean(cov):.1f}%")
-    print(f"  tightest-span window was the best one in "
-          f"{sum(1 for e in slot_err if e == 0)}/{len(slot_err)} traces "
-          f"(offset errors {sorted(set(slot_err))})")
-    print(f"  per-trace accuracy, TRUE slots           : {np.mean(or_acc):.4f}"
-          f"   <- detection ceiling")
-    print(f"  per-trace accuracy, best window per trace: "
-          f"{np.mean(best_acc):.4f}   <- segmentation ceiling")
-    if inf_acc:
-        print(f"  per-trace accuracy, consensus-aligned    : "
-              f"{np.mean(inf_acc):.4f}   <- what the decode actually did")
-    if key_bits and per != key_bits:
-        print(f"  NOTE: oracle says {per} ladder bits, --key implies {key_bits}")
+
+def infer_key_pool(output_dir, tag, runs, keys, jobs):
+    pool = os.path.join(find_project_root(), "experiments", "v8_ecdh",
+                        "ec_key_pool")
+    todo = []
+    for k in range(keys):
+        d = os.path.join(output_dir, f"pp_{tag}_k{k}_r{runs:05d}")
+        if os.path.isdir(d):
+            todo.append((k, d, os.path.join(pool, f"ec_key_{k}.json")))
+    if not todo:
+        print(f"no captures under {output_dir} for tag {tag}")
+        return 1
+
+    results = {}
+    with concurrent.futures.ProcessPoolExecutor(jobs) as ex:
+        futs = {ex.submit(decode_one_key, (d, kp)): k for k, d, kp in todo}
+        for f in concurrent.futures.as_completed(futs):
+            results[futs[f]] = f.result()
+
+    print(f"{'key':>4} {'known':>6} {'coverage':>9} {'wrong':>6} {'known-acc':>10}")
+    good = []
+    for k, _, _ in todo:
+        r = results.get(k)
+        if r is None:
+            print(f"{k:>4} {'-':>6} {'-':>9} {'-':>6} {'no traces':>10}")
+            continue
+        acc = "none" if r["known_acc"] is None else f"{r['known_acc']:.5f}"
+        flag = "  [band fallback]" if r["fallback"] else ""
+        print(f"{k:>4} {r['known']:>6} {r['coverage']:>8.2f}% {r['wrong']:>6} "
+              f"{acc:>10}{flag}")
+        if r["known_acc"] is not None:
+            good.append(r)
+
+    if not good:
+        print("\nno key decoded")
+        return 1
+    acc = sorted(r["known_acc"] for r in good)
+    cov = sorted(r["coverage"] for r in good)
+    rec = sorted(r["coverage"] * r["known_acc"] for r in good)
+    def triple(v, scale=1.0):
+        return (f"{scale * v[0]:.1f} / {scale * statistics.median(v):.1f} / "
+                f"{scale * v[-1]:.1f}")
+    print(f"\n{len(good)}/{len(todo)} keys decoded")
+    print(f"  bits predicted             {triple(cov)} %")
+    print(f"  bits of the key recovered  {triple(rec)} %")
+    print(f"  accuracy on predicted bits {triple(acc, 100)} %")
+    return 0
 
 
 if __name__ == "__main__":
@@ -1123,100 +981,30 @@ if __name__ == "__main__":
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("-d", "--directory", help="capture directory of *.out traces")
     src.add_argument("-f", "--file", help="single .out trace")
-    parser.add_argument("--key", required=True, help="key file the capture used: ec_key_<i>.json pool entry or raw-hex scalar")
+    src.add_argument("--all_keys", help="output directory holding one capture per pool key")
+    src.add_argument("--health", help="capture directory to accept or reject")
+    parser.add_argument("--key", help="key file the capture used: ec_key_<i>.json pool entry or raw-hex scalar")
+    parser.add_argument("--tag", default="paper", help="capture tag used by e2e.sh")
+    parser.add_argument("--runs", type=int, default=100)
+    parser.add_argument("--keys", type=int, default=100)
+    parser.add_argument("--jobs", type=int, default=10)
     parser.add_argument("--debug", action="store_true", help="per-trace diagnostics")
-    parser.add_argument("--oracle", action="store_true",
-                        help="score against victim_bits.txt (-bits captures): "
-                             "separates slot-alignment error from detection error")
-    parser.add_argument("--primitive", choices=("fr", "ps", "pp"),
-                        help="override the capture's recorded primitive")
-    parser.add_argument("--ratio", type=float,
-                        help=f"per-slot marker/clock ratio above which a slot is "
-                             f"a 0-bit, used for per-trace labels "
-                             f"(default {ratio_thresh})")
-    parser.add_argument("--lo", type=float,
-                        help=f"fixed-band vote: mean scaled marker count <= lo "
-                             f"-> 1 (default {band_lo})")
-    parser.add_argument("--hi", type=float,
-                        help=f"fixed-band vote: mean scaled marker count >= hi "
-                             f"-> 0 (default {band_hi})")
-    parser.add_argument("--band", action="store_true",
-                        help="force the fixed-band vote instead of the history "
-                             "model (it is used automatically when the history "
-                             "model cannot anchor, e.g. a constant scalar)")
-    parser.add_argument("--llr-margin", type=float,
-                        help=f"history decode: |LLR| below this -> unknown "
-                             f"(default {llr_margin}; 0 labels every bit)")
-    parser.add_argument("--llr-folds", type=int,
-                        help=f"history/matched decode: report only bits on "
-                             f"which this many disjoint trace subsets agree "
-                             f"with the full decode (default {llr_folds}, "
-                             f"1 disables)")
-    parser.add_argument("--halfwidth", type=float,
-                        help=f"history decode: half-width of the window used to "
-                             f"locate the 0-cluster (default {mode_halfwidth})")
-    parser.add_argument("--history-taps", type=int,
-                        help=f"history decode: order K of the FIR contamination "
-                             f"model (default {history_taps}; must be >=1 "
-                             f"-- see the note on the constant)")
-    parser.add_argument("--history-ridge", type=float,
-                        help=f"history decode: ridge penalty on the FIR weights "
-                             f"(default {history_ridge})")
-    parser.add_argument("--counts", dest="counts", action="store_true",
-                        default=None,
-                        help="decode P+P by per-slot count likelihood instead "
-                             "of the default (F+R-style history model on the "
-                             "marker/clock ratio, self.scores) -- measured "
-                             "WORSE on both captures tested (32-34 wrong "
-                             "against 3-11), kept for comparison and for a "
-                             "capture too thin for the history model to "
-                             "return many known bits")
-    parser.add_argument("--no-counts", dest="counts", action="store_false",
-                        help="same as the default; kept for scripts that "
-                             "already pass it")
-    parser.add_argument("--matched", dest="matched", action="store_true",
-                        default=None,
-                        help="force the matched (lagged-kernel + Viterbi) "
-                             "decode; it is the default for P+S captures, "
-                             "whose response peaks at lag 1")
-    parser.add_argument("--no-matched", dest="matched", action="store_false",
-                        help="decode a P+S capture with the F+R history model "
-                             "(reads each bit off its neighbour: ~chance)")
-    parser.add_argument("--posterior", type=float,
-                        help=f"matched decode: per-bit posterior below which a "
-                             f"bit is left unknown (default {ps_posterior})")
-    parser.add_argument("--profile-dir",
-                        help="matched decode: capture of a KNOWN scalar to fit "
-                             "the kernel on, instead of fitting it blind. The "
-                             "shape belongs to the primitive and the machine, "
-                             "not the key, so it transfers between captures")
-    parser.add_argument("--profile-key",
-                        help="key file for --profile-dir")
     args = parser.parse_args()
 
-    if args.ratio is not None:
-        ratio_thresh = args.ratio
-    if args.lo is not None:
-        band_lo = args.lo
-    if args.hi is not None:
-        band_hi = args.hi
-    if args.llr_margin is not None:
-        llr_margin = args.llr_margin
-    if args.llr_folds is not None:
-        llr_folds = args.llr_folds
-    if args.halfwidth is not None:
-        mode_halfwidth = args.halfwidth
-    if args.history_taps is not None:
-        history_taps = args.history_taps
-    if args.history_ridge is not None:
-        history_ridge = args.history_ridge
-    if args.posterior is not None:
-        ps_posterior = args.posterior
+    if args.health:
+        line, ok = capture_health(args.health)
+        print(line)
+        raise SystemExit(0 if ok else 1)
+
+    if args.all_keys:
+        raise SystemExit(infer_key_pool(args.all_keys, args.tag, args.runs,
+                                        args.keys, args.jobs))
+
+    if not args.key:
+        raise SystemExit("--key is required with -d/-f")
 
     directory = args.directory or os.path.dirname(args.file)
     builtin_lines, primitive = load_builtin_lines(directory)
-    if args.primitive:
-        primitive = args.primitive
     print(f"capture {directory}")
     print(f"  primitive {primitive}, channels: " + ", ".join(
         f"col{i} role '{r.role}' {r.handler}+{r.off}"
@@ -1233,36 +1021,15 @@ if __name__ == "__main__":
     skey.align_candidates(verbose=args.debug)
     if not skey.infer_keys:
         print("No traces decoded; run with --debug to see why.")
-        if args.oracle:
-            score_oracle(directory, builtin_lines, primitive, skey.secret_key_bits)
         raise SystemExit(1)
 
     kept = skey.all_traces()
     print(f"\ndecoded {len(kept)} traces")
 
-    matched = (primitive == "ps") if args.matched is None else args.matched
-    counts = bool(args.counts)
+    matched = primitive == "ps"
 
-    kernel = None
-    if matched and args.profile_dir:
-        if not args.profile_key:
-            raise SystemExit("--profile-dir needs --profile-key")
-        p_lines, p_prim = load_builtin_lines(args.profile_dir)
-        pkey = EC_KEY.load(args.profile_key, p_lines, p_prim)
-        pkey.infer_directory(args.profile_dir)
-        pkey.align_candidates()
-        if not pkey.infer_keys:
-            raise SystemExit(f"no traces decoded in {args.profile_dir}")
-        kernel = pkey.profile_kernel(pkey.all_traces())
-        print(f"  kernel profiled on {args.profile_dir}: "
-              f"c={kernel[0]:.3f} h={[round(float(v), 3) for v in kernel[1]]}")
-
-    if args.band:
-        pred, st = skey.vote(kept)
-    elif counts:
-        pred, st = skey.vote_counts(kept)
-    elif matched:
-        pred, st = skey.vote_matched(kept, kernel=kernel)
+    if matched:
+        pred, st = skey.vote_matched(kept)
     else:
         pred, st = skey.vote_history(kept, llr_margin, llr_folds)
 
@@ -1274,9 +1041,7 @@ if __name__ == "__main__":
     elif "model" not in st:
         why = ("no 0-cluster to anchor the history model"
                if not matched else "too few resolved slots to fit a kernel")
-        head = (f"VOTE: fixed band {st['band']}"
-                if args.band else
-                f"VOTE: {why} (constant scalar or thin capture) -- "
+        head = (f"VOTE: {why} (constant scalar or thin capture) -- "
                 f"fixed band {st['band']}")
     elif matched:
         h, c, sd, how = st["model"]
@@ -1306,8 +1071,3 @@ if __name__ == "__main__":
         print(f"0 wrong ({st['unknown']} unknown bits left for key-recovery).")
 
     print_key_comparison(skey.secret_key_bin, pred)
-
-    if args.oracle:
-        score_oracle(directory, builtin_lines, primitive, skey.secret_key_bits,
-                     dict(skey.infer_keys), skey.period, skey.offset,
-                     skey.phase)
