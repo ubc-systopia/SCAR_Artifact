@@ -58,12 +58,12 @@ def merge_inference(candidates, iters=6):
     return best
 
 
-def false_arm_tick_count(clock, false_arm, key_length):
+def active_count(clock, zero_line, key_length):
     ticks = densest_segment(clock)
-    if len(ticks) < key_length or len(false_arm) == 0:
+    if len(ticks) < key_length or len(zero_line) == 0:
         return None
     t = ticks[:key_length]
-    inside = false_arm[(false_arm >= t[0]) & (false_arm <= t[-1])]
+    inside = zero_line[(zero_line >= t[0]) & (zero_line <= t[-1])]
     if len(inside) == 0:
         return None
     idx = np.clip(np.searchsorted(t, inside, side="right") - 1,
@@ -73,27 +73,27 @@ def false_arm_tick_count(clock, false_arm, key_length):
 
 def infer_key(subdir, key_length):
     candidates = []
-    false_ticks = []
+    zero_counts = []
     for filepath in sorted(Path(subdir).glob("*.out")):
         trace = load_trace(filepath)
         if trace.shape[1] < 3:
             continue
         clock = trace_to_timestamp(trace[0], "PS")
         marker = trace_to_timestamp(trace[2], "PS")
-        false_arm = trace_to_timestamp(trace[1], "PS")
+        zero_line = trace_to_timestamp(trace[1], "PS")
         cand = trace_candidates(clock, marker, key_length)
         if cand:
             candidates.append(cand)
-            lit = false_arm_tick_count(clock, false_arm, key_length)
-            if lit is not None:
-                false_ticks.append(lit)
+            zero_count = active_count(clock, zero_line, key_length)
+            if zero_count is not None:
+                zero_counts.append(zero_count)
     if not candidates:
         return None, 0.0, 0, None
     score, bits = merge_inference(candidates)
 
     bits[0] = 1
-    median_lit = float(np.median(false_ticks)) if false_ticks else None
-    return bits, score, len(candidates), median_lit
+    median_zero_count = float(np.median(zero_counts)) if zero_counts else None
+    return bits, score, len(candidates), median_zero_count
 
 
 def infer_key_pool(all_keys_dir):
@@ -115,7 +115,7 @@ def infer_key_pool(all_keys_dir):
         truth = np.array([int(c) for c in bin(secret)[2:]], dtype=np.int8)
 
         zeros = int((truth == 0).sum())
-        bits, score, n, lit = infer_key(subdir, len(truth))
+        bits, score, n, zero_count = infer_key(subdir, len(truth))
         if bits is None:
             rows.append((key_id, len(truth), 0, 0.0, None, len(truth),
                          zeros, None))
@@ -126,15 +126,15 @@ def infer_key_pool(all_keys_dir):
         total_wrong += wrong
         total_bits += len(truth)
         rows.append((key_id, len(truth), n, score,
-                     (bits == truth).mean(), wrong, zeros, lit))
+                     (bits == truth).mean(), wrong, zeros, zero_count))
 
     print(f"{'key':>4} {'bits':>5} {'traces':>7} {'consistency':>12} "
-          f"{'accuracy':>9} {'wrong':>6} {'zeros':>6} {'cl1 lit':>8}")
-    for key_id, length, n, score, acc, wrong, zeros, lit in rows:
+          f"{'accuracy':>9} {'wrong':>6} {'zeros':>6} {'seen':>6}")
+    for key_id, length, n, score, acc, wrong, zeros, zero_count in rows:
         acc_s = "-" if acc is None else f"{acc * 100:.2f}%"
-        lit_s = "-" if lit is None else f"{lit:.0f}"
+        seen_s = "-" if zero_count is None else f"{zero_count:.0f}"
         print(f"{key_id:>4} {length:>5} {n:>7} {score:>12.4f} "
-              f"{acc_s:>9} {wrong:>6} {zeros:>6} {lit_s:>8}")
+              f"{acc_s:>9} {wrong:>6} {zeros:>6} {seen_s:>6}")
     if total_bits:
         print(f"\nTOTAL: {total_wrong} wrong / {total_bits} bits = "
               f"{(1 - total_wrong / total_bits) * 100:.3f}%")
