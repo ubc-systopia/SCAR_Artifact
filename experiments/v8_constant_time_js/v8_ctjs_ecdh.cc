@@ -1163,14 +1163,14 @@ int main(int argc, char *argv[]) {
 		if (!src_path) {
 			snprintf(def_src,
 			         sizeof(def_src),
-			         "%s/experiments/v8_constant_time_js/js/ecdh_ct_eval.js",
+			         "%s/experiments/v8_constant_time_js/js/ecdh_ctjs_eval.js",
 			         root);
 			src_path = def_src;
 		}
 		if (!rep_path) {
 			snprintf(def_rep,
 			         sizeof(def_rep),
-			         "%s/experiments/v8_constant_time_js/js/ecdh_ct_repeat.js",
+			         "%s/experiments/v8_constant_time_js/js/ecdh_ctjs_repeat.js",
 			         root);
 			rep_path = def_rep;
 		}

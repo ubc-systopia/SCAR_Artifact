@@ -24,6 +24,6 @@ experiments/v8_constant_time_js/e2e.sh
 To print the per-key statistics:
 
 ```bash
-python experiments/v8_constant_time_js/evaluation/extract_v8_ct_ecdh.py \
+python experiments/v8_constant_time_js/evaluation/extract_v8_ctjs_ecdh.py \
     --all_keys build/experiments/v8_constant_time_js/output
 ```

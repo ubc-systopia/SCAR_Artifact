@@ -7,7 +7,7 @@ SRC="${ROOT}/experiments/v8_constant_time_js"
 BIN="${BUILD}/experiments/v8_constant_time_js/v8_ctjs_ecdh"
 POOL="${ROOT}/experiments/v8_ecdh/ec_key_pool"
 OUT="${BUILD}/experiments/v8_constant_time_js/output"
-EXTRACT="${SRC}/evaluation/extract_v8_ct_ecdh.py"
+EXTRACT="${SRC}/evaluation/extract_v8_ctjs_ecdh.py"
 CPUS="${CPUS:-5,7,9,11,13,15}"
 KEYS="${KEYS:-100}"
 RUNS="${RUNS:-100}"
@@ -42,7 +42,7 @@ for k in $(seq 0 $((KEYS - 1))); do
 		(
 			cd "$(dirname "$OUT")" || exit 1
 			taskset -c "$CPUS" "$BIN" -pp -runs="$RUNS" -warmup="$WARMUP" \
-				"$SRC/js/ecdh_ct_eval.js" "$SRC/js/ecdh_ct_repeat.js" \
+				"$SRC/js/ecdh_ctjs_eval.js" "$SRC/js/ecdh_ctjs_repeat.js" \
 				"$POOL/ec_key_${k}.json"
 		) >>"$log" 2>&1
 		[ -d "$raw" ] || continue
