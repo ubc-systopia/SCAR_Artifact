@@ -14,14 +14,26 @@ Jpeg-js's IDCT implementation contains secret-dependent control-flow which resul
 
 ## Evaluation
 
-To run the evaluation execute the following command:
+Run the attack on the victim script of the image to recover:
 
 ```bash
-cd build
-./experiments/quickjs_jpeg/quickjs_jpeg ./experiments/quickjs_jpeg/js/jpeg_decode_emacs.js
+cd SCAR_Artifact/build
+taskset -c 1,3,5,7,9,11,13,15 ./src/runtime/quickjs/quickjs_rt \
+    ../experiments/quickjs_jpeg/js/jpeg_decode_emacs.js
 ```
+
+Then start the attacker in a second shell:
+
+```bash
+cd SCAR_Artifact/build
+taskset -c 1,3,5,7,9,11,13,15 ./experiments/quickjs_jpeg/quickjs_jpeg
+```
+
+Then extract the image from the recorded trace:
 
 ```bash
 cd SCAR_Artifact
-python evaluation/extract_jpeg_js.py -f build/output/quickjs_jpeg_js_r00001/r0.out
+python experiments/quickjs_jpeg/evaluation/extract_jpeg_js.py \
+    -f build/output/quickjs_jpeg_js_r00001/r0.out \
+    -o recovered.jpg
 ```
