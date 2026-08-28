@@ -1,4 +1,4 @@
-"""Text versions of the figures, from the shipped traces.
+"""Text versions of the EXPLANATION.md figures, from the shipped traces.
 
 Same content as plot_figures.py renders with bokeh, printed as ASCII so it can
 be checked without installing anything beyond numpy.

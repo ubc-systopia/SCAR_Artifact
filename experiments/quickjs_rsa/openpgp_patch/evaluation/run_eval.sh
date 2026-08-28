@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # ---- config --------------------------------------------------------------
-SAMPLES="${SAMPLES:-100000}"
+SAMPLES="${SAMPLES:-200000}"
 BITS="${BITS:-4095}"
 SEED="${SEED:-1}"
 PIN_CPU="${PIN_CPU:-11}"
