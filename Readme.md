@@ -1,6 +1,6 @@
 # SCAR Artifact
 
-Artifact for "Cache Side Channel Attacks on Language Runtimes"
+Artifact for "Cache Side-Channel Attacks on Language Runtimes"
 
 ## Hardware/Software Setup
 - CPU: Intel Xeon(R) Silver 4390Y SP
