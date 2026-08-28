@@ -130,10 +130,10 @@ def main():
             print(f"{f'{lo}-{hi}':<16}{(pa[lo:hi][m] == t).mean():>10.3f}"
                   f"{(pb[lo:hi][m] == t).mean():>10.3f}"
                   f"{(pa[lo:hi][m] == pb[lo:hi][m]).mean():>11.3f}")
-        print("\nBoth traces are near-perfect throughout, so agreement is high "
-              "everywhere.\nThe residual errors are still largely shared rather "
-              "than independent, so combining traces "
-              "cannot remove them.")
+        print("\nAgreement stays near 1.0 even across the ranges where both "
+              "traces are at chance:\nthe two lose phase in the same place and "
+              "in the same way, so their errors are\nshared rather than "
+              "independent, and combining traces cannot remove them.")
     return 0
 
 

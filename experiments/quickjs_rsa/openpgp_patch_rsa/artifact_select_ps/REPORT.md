@@ -28,97 +28,114 @@ short status note on the pool-scale evaluation.
 
 ### Setup
 
-100 random RSA-4096 keys (`rsa_key_pool/`), targeting 128 Prime+Scope traces
-per key (one signature each). 99 keys collected successfully; one attacker
-run failed to build its eviction set for key 88 mid-pool (an occasional,
-expected failure mode — the driver detects it, releases the wedged victim,
-and moves on rather than hanging the whole run). Of the 99 collected, key 85
-came back with every trace degenerate (near-empty; see below), leaving **98
-keys evaluated**.
+100 random RSA-4096 keys (`rsa_key_pool/`), 128 Prime+Scope traces per key
+(one signature each), **all 100 keys evaluated**.
 
-Per trace, the decoder (`artifact_select_ps/analysis/decoder.py`) recovers a
-loop period by locking onto it (Fourier-style phase scan) and assigns each
-paired access an exponent-bit index from `t = index × P + offset`. One
-integer — which loop iteration the first pair belongs to (the "anchor") — is
-not fixed by the trace itself and must be resolved separately. Three tiers
-are reported:
+Two keys needed a second collection pass. The first pass over the pool lost
+key 88 entirely — the attacker failed to build its eviction set and the
+driver moved on rather than hanging the run — and returned key 85 with all
+128 traces degenerate (near-empty; see Data quality). Both were re-collected
+individually afterwards and came back normal on the first retry (key 85: 0
+of 128 degenerate, best single trace 0.9601; key 88: 3 of 128 degenerate,
+0.9358). Both failure modes are transient and per-run, not properties of
+those keys.
 
-- **blind** — the anchor is resolved by cross-trace consensus alone
-  (`blind_anchors`), no ground truth. This recovers every trace's anchor
-  correctly *relative to the others*, but leaves one integer shared by the
-  whole key unresolved (cross-trace agreement can't distinguish it — every
-  candidate for that shared shift explains the other traces equally well).
-- **blind + shift** — the one shared integer is additionally resolved per
-  key (`resolve_group_shift`), standing in for what a real attacker would
-  do with a cheap external check (e.g. trying the handful of candidate keys
-  against a known signature).
-- **oracle** — every trace's anchor resolved individually against the known
-  key. Upper bound only, not attacker-achievable.
+Per trace, the decoder (`artifact_select_ps/analysis/decoder.py`) takes the
+loop period to be the median spacing between consecutive paired accesses and
+assigns each pair an exponent-bit index from `t = index × P + t₀`. The
+decoder is deliberately the simplest thing that works: four steps, each one
+line of arithmetic, at a cost in accuracy that is quantified below and in
+`artifact_select_ps/EXPLANATION.md`.
+
+One integer — which loop iteration the first pair belongs to (the "anchor") —
+is not fixed by the trace itself. It is resolved here against the known
+exponent (`best_anchor`, a ±2 search), standing in for the check a real
+attacker performs anyway: trying the handful of candidate keys against a
+known signature. That is an oracle, so every number below is an upper bound
+in that one specific respect.
 
 Per-bit voting bins predictions into 0/1/unknown using the band [0.90, 0.95]
 (REPORT §5.1's threshold), each band-thresholded across bits of that key.
 
 ### Results
 
-**Best single trace per key is excellent and consistent.** Across 98 keys,
-best-single-trace accuracy has median 99.77%, ranging 97.7%–99.97% for 97 of
-98 keys. The one exception is key 40 at 58.8% (see Limitations).
+**Best single trace per key is excellent and consistent.** Across all 100
+keys, best-single-trace accuracy has median 98.32%, at or above 95% for 94
+of 100 keys and above 90% for 99. The one exception is key 40 at 59.5% (see
+Limitations).
 
-**Voting never beats the best single trace — 0/98 keys, at any tier.**
-Naive per-bit majority vote across all ~125–128 runs of a key gives median
-known-bit accuracy of only 62.7% (range 49.6%–98.3%, +shift tier), against
-99.8% from just keeping the best trace. This is not new — REPORT's earlier
-5-trace result already found repetition doesn't help because errors are
-shared, not independent — but at pool scale the effect is worse than
-"doesn't help": it actively destroys the signal. The mechanism is that
-individual traces are not uniformly noisy; a meaningful fraction (roughly
-15–25%, observed directly on a 32-trace sample of two keys) are close to
-pure chance, and unweighted voting lets those traces poison bits a single
-good trace would get right. No cheap, no-oracle signal (lock-fit magnitude,
-cross-trace agreement) reliably separates good traces from bad ones in this
-data, so the practical strategy is **best-of-N with external verification**,
-not repetition: decode each trace independently, keep the one that verifies
-against a known signature. That check also resolves the anchor's one
-remaining unknown integer for free.
+That is the number to read, and it barely moved when the decoder was
+simplified. A single trace is fragile here: the median-spacing period
+estimate holds phase over part of a trace and slips somewhere in the middle
+of the rest, so individual traces land anywhere from 0.5 to 0.99 (the
+five-trace single-key study in §5.2.5 sees 0.76–0.92). At 128 traces per
+key, some trace always holds phase throughout, and best-of-N recovers almost
+all of what a much more elaborate period estimator would buy per trace —
+median 98.3% against 99.8% for the phase-locking decoder this replaced. The
+simplification costs about 1.5 points at pool scale and roughly 20 on a
+single trace.
+
+**Voting never beats the best single trace — 0/100 keys.** Naive per-bit
+majority vote across all ~125–128 runs of a key gives median known-bit
+accuracy of only 58.8% (range 49.2%–74.4%), against 98.3% from just keeping
+the best trace. This is not new — the earlier 5-trace result already found
+repetition doesn't help because errors are shared, not independent — but at
+pool scale the effect is worse than "doesn't help": it actively destroys the
+signal. The mechanism is that individual traces are not uniformly noisy, and
+each one is wrong over a *different* stretch of the exponent; unweighted
+voting lets the traces that are at chance over a given range outvote the one
+that is tracking it. So the practical strategy is **best-of-N with external
+verification**, not repetition: decode each trace independently, keep the one
+that verifies against a known signature. That check also resolves the
+anchor's one unknown integer for free.
 
 | | min | median | max |
 |---|---|---|---|
-| best single trace, accuracy | 0.588 (key 40) | 0.9977 | 0.9997 |
-| voted (+shift), known-bit accuracy | 0.4959 | 0.6265 | 0.9832 |
-| voted (oracle), known-bit accuracy | 0.4949 | 0.6137 | 0.9197 |
-| voted (+shift), coverage | 0.2367 | 0.8588 | 0.9893 |
+| best single trace, accuracy | 0.595 (key 40) | 0.9832 | 0.9970 |
+| voted, known-bit accuracy | 0.4921 | 0.5883 | 0.7443 |
+| voted, coverage | 0.2746 | 0.8901 | 0.9885 |
 
 **"Runs required to reach 99% coverage" is a misleading headline in
 isolation.** Read the way REPORT §5.1 reads it, this number looks great:
-median 2 runs across every tier, i.e. two traces are "enough." But that's
-coverage, not accuracy — the vote becomes confident fast while still being
-wrong on a large share of what it's confident about (median accuracy 62.7%
-at that same +shift tier). One outlier is real signal rather than noise:
-key 40 needed 111 of 111 available runs and never reached the 99% target —
-consistent with it also being the worst best-single-trace key and the
-largest single degenerate-trace count (17/128).
+median 2 runs, i.e. two traces are "enough." But that's coverage, not
+accuracy — the vote becomes confident fast while still being wrong on a large
+share of what it's confident about (median accuracy 58.8%). One outlier is
+real signal rather than noise: key 40 needed 111 of 111 available runs and
+never reached the 99% target — consistent with it also being the worst
+best-single-trace key and the largest single degenerate-trace count (17/128).
 
 ### Data quality
 
-336 of 12,672 collected traces (2.7%) were dropped as degenerate (< 100
+211 of 12,800 collected traces (1.6%) were dropped as degenerate (< 100
 paired accesses recovered, against a normal ~3900–4000; `MIN_WIDE_PAIRS` in
 `evaluate_pool.py`). These arrive in short bursts within a key rather than
 uniformly — e.g. key 63 lost 27/128, keys 11 and 15 lost 22–23/128 — pointing
-at a transient recording problem rather than steady-state noise. 44% of keys
-had at least one dropped trace (median 2/128). Key 85 lost all 128 traces
-this way and contributes nothing to the results above.
+at a transient recording problem rather than steady-state noise. 52% of keys
+had at least one dropped trace (median 2/128 among those). The extreme case
+was key 85's first collection pass, which lost all 128; re-collecting it lost
+none, which is the clearest evidence available that this is a property of the
+run and not of the key.
 
 ### Limitations
 
-- One key (40) is a genuine outlier across every metric — worst
-  best-single-trace accuracy, most degenerate traces, and the only key whose
-  voted coverage never converged. Not averaged away above; flagged as-is.
-- Key 85's total loss and the bursty degenerate-trace pattern are unexplained
-  — plausibly transient system noise during collection, not investigated
-  further here.
-- The blind anchor tier still needs one per-key oracle bit (the shared
-  integer shift) that this evaluation resolves against ground truth; a real
-  attacker would resolve it via signature verification, not run here.
+- One key (40) is a genuine outlier — worst best-single-trace accuracy by a
+  wide margin (0.595 against a 0.9832 median), one of the highest
+  degenerate-trace counts (17/128), and the only key whose voted coverage
+  never converged. Not averaged away above; flagged as-is. Unlike keys 85 and
+  88 it was not re-collected, so it is not known whether a second pass would
+  behave the same way.
+- The bursty degenerate-trace pattern is unexplained — plausibly transient
+  system noise during collection, not investigated further here. That it
+  cleared completely on key 85's retry supports the "transient" reading but
+  does not identify a cause.
+- The per-trace anchor is resolved against ground truth (a ±2 search); a real
+  attacker would resolve the same handful of candidates via signature
+  verification, not run here.
+- The decoder is deliberately simpler than the attack allows. Estimating the
+  loop period as a median spacing, rather than locking it to ~10⁻⁸ relative,
+  costs ~1.4 points of best-of-N accuracy at pool scale and ~20 on a single
+  trace. The numbers here are a lower bound on what the channel yields,
+  traded for a decoder that can be read end to end in a few minutes.
 - The ~4.1 recorded accesses per `SELECT` call are now accounted for, but not
   the way the earlier text assumed: `bf_rint` shares the probed cache line with
   `bf_logic_or`, and one signature makes 4,094 `bf_logic_or` calls against

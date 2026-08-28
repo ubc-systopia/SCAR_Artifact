@@ -76,13 +76,14 @@ def and_iterations(path):
 def separability(t, value, bits):
     """Best median-threshold accuracy of `value` against the exponent bits.
 
-    Indices come from the same locked-period model the main decoder uses; the
+    Indices come from the same straight-line model the main decoder uses; the
     anchor (which iteration the first sample belongs to) is scanned, as in
     decoder.best_anchor. This is an upper bound -- the anchor is resolved
     against ground truth -- which is the point: even given the anchor for
     free, the AND intervals do not separate.
     """
-    period, offset, _ = D.lock_period(t.astype(float))
+    t = t.astype(float)
+    period, offset = D.loop_period(t), t[0]
     idx = np.round((t - offset) / period).astype(int)
     idx -= idx.min()
 

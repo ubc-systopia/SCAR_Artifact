@@ -4,14 +4,17 @@ Artifact for REPORT.md (section 5.2). OpenPGP.js's proposed constant-time patch
 replaces the secret-dependent ternary in `modExp` with a masked selection over
 BigInts. This removes the bytecode branch but leaves the amount of work done by
 QuickJS's big-integer library dependent on the key bit. A Prime+Scope attack on
-one signature recovers 3976 of the 4094 exponent bits with 30 errors.
+one signature recovers 4022 of the 4094 exponent bits at 0.92 accuracy, using a
+decoder small enough to read in one sitting (see `analysis/decoder.py`); the
+lowest 2048 bits come back with 23 errors on the best-placed trace.
 
 ## What is here
 
 ```
 REPORT.md                    the writeup (section 5.2)
 EXPLANATION.md               plain-language walkthrough of the attack, with figures
-analysis/decoder.py          decoder; needs only numpy
+analysis/decoder.py          decoder (pair splitting, median-period indexing,
+                            median-gap bit rule); needs only numpy
 analysis/reproduce.py        regenerates every table in the report
 analysis/verify.py           checks the output against the published numbers
 analysis/figures.py          the figures as text; needs only numpy

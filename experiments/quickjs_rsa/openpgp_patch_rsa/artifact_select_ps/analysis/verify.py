@@ -13,21 +13,24 @@ import decoder as D
 
 # (trace, wide_pairs, alternation, correlation, n, accuracy)
 EXPECTED = [
-    ("r0", 4023, 0.982, +0.8743, 3991, 0.9915),
-    ("r1", 3988, 0.979, +0.9089, 3976, 0.9925),
-    ("r2", 3987, 0.975, +0.7501, 3953, 0.9679),
-    ("r3", 4008, 0.977, +0.8992, 3972, 0.9894),
-    ("r4", 4024, 0.979, +0.8961, 3989, 0.9817),
+    ("r0", 4023, 0.982, +0.4819, 4022, 0.7718),
+    ("r1", 3988, 0.979, +0.4724, 3987, 0.7750),
+    ("r2", 3987, 0.975, +0.6170, 3986, 0.8989),
+    ("r3", 4008, 0.977, +0.4817, 4006, 0.7646),
+    ("r4", 4024, 0.979, +0.7628, 4022, 0.9177),
 ]
 
 # Errors among the lowest 2048 exponent bits, and bits assigned an index.
-EXPECTED_LOW = {"r0": (17, 1993), "r1": (19, 1981), "r2": (56, 1991),
-                "r3": (23, 1989), "r4": (66, 1992)}
+# These vary far more between traces than the whole-trace accuracy does,
+# because each trace holds phase over a contiguous stretch and loses it
+# elsewhere -- see EXPLANATION.md, "The hard part: which bit is which".
+EXPECTED_LOW = {"r0": (23, 2013), "r1": (884, 1986), "r2": (266, 2008),
+                "r3": (51, 2007), "r4": (322, 2007)}
 
-# The anchor each trace resolves to, and the lock magnitude. The anchor is the
-# one integer the trace does not determine (see decoder.assign_indices); it is
-# recorded here so a change in it shows up as a failure rather than silently.
-EXPECTED_ANCHOR = {"r0": 1, "r1": 0, "r2": 0, "r3": 1, "r4": 0}
+# The anchor each trace resolves to. It is the one integer the trace does not
+# determine (see decoder.assign_indices); it is recorded here so a change in
+# it shows up as a failure rather than silently.
+EXPECTED_ANCHOR = {"r0": 0, "r1": -1, "r2": -1, "r3": 0, "r4": -1}
 
 TOL = 1e-3
 failures = []
