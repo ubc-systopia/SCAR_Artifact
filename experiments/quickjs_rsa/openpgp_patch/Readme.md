@@ -32,15 +32,14 @@ so the two values of the secret bit still differ in execution time.
 ## Part 1: the timing distributions
 
 Times a single selection per measurement with `rdtscp`, split by the secret bit,
-and reports the single-sample distinguishability on both QuickJS and V8.
+and reports the single-sample distinguishability.
 
 ```bash
 cd experiments/quickjs_rsa/openpgp_patch
 ./evaluation/run_eval.sh
 ```
 
-It times every selector in `js/impl/` on both QuickJS and V8 and writes
-`results/<engine>_<impl>.csv`. To analyse them and draw the paper's figure:
+To analyse draw the paper's figure:
 
 ```bash
 python3 evaluation/plot_violin.py

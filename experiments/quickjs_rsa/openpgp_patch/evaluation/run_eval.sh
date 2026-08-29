@@ -13,7 +13,8 @@ Usage: ./run_eval.sh [-n samples] [-b bits] [-s seed] [-c cpu]
   -s  PRNG seed, so operands match across engines (default 1)
   -c  CPU to pin to with taskset (default 11)
 
-Override the engine binaries with QJS_BIN and D8_BIN.
+Override the engine binaries with QJS_BIN and D8_BIN. d8 is optional:
+without it only the QuickJS pass runs, which is what the paper prints.
 EOF
 }
 
@@ -48,13 +49,20 @@ if command -v taskset >/dev/null 2>&1; then
 	TASKSET="taskset -c $PIN_CPU"
 fi
 
-for bin in "$QJS_BIN" "$D8_BIN"; do
-	if [ ! -x "$bin" ]; then
-		echo "[!] engine binary not found/executable: $bin" >&2
-		echo "    (run this on the server; override with QJS_BIN/D8_BIN)" >&2
-		exit 1
-	fi
-done
+if [ ! -x "$QJS_BIN" ]; then
+	echo "[!] qjs not found/executable: $QJS_BIN" >&2
+	echo "    the paper's figure is QuickJS-only, so this one is required" >&2
+	echo "    (override with QJS_BIN)" >&2
+	exit 1
+fi
+
+HAVE_D8=1
+if [ ! -x "$D8_BIN" ]; then
+	HAVE_D8=0
+	echo "[!] d8 not found/executable: $D8_BIN" >&2
+	echo "    skipping the V8 pass; it only feeds plot_violin.py --engines quickjs,v8," >&2
+	echo "    which the paper does not print (override with D8_BIN)" >&2
+fi
 
 mkdir -p "$RESULTS"
 
@@ -81,9 +89,11 @@ run_one() {
 
 for p in "$PATCH_DIR"/js/impl/*.mjs; do
 	impl="$(basename "$p" .mjs)"
-	impl_module="./impl/${impl}.mjs"    # resolved relative to bench.mjs
+	impl_module="./impl/${impl}.mjs"
 	run_one quickjs "$impl_module" "$impl"
-	run_one v8      "$impl_module" "$impl"
+	if [ "$HAVE_D8" -eq 1 ]; then
+		run_one v8 "$impl_module" "$impl"
+	fi
 done
 
 echo "[*] done. CSVs in $RESULTS/"

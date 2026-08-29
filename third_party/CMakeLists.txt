@@ -42,7 +42,7 @@ set(V8_GIT_REF "13.1-lkgr" CACHE STRING "V8 tag/branch to check out")
 set(V8_OUT_SUBDIR "out.gn/x64.release" CACHE STRING "V8 build directory, relative to V8_SRC_DIR")
 set(V8_OUT_DIR "${V8_SRC_DIR}/${V8_OUT_SUBDIR}" CACHE INTERNAL "V8 build directory (absolute)")
 
-set(V8_NINJA_TARGETS v8_monolith v8_libbase v8_libplatform)
+set(V8_NINJA_TARGETS v8_monolith v8_libbase v8_libplatform d8)
 
 if(NOT EXISTS "${V8_SRC_DIR}")
     message("Fetching V8...")
@@ -84,8 +84,11 @@ set(V8_STATIC_LIB
 	"${V8_OUT_DIR}/obj/libv8_libplatform.a"
 	CACHE INTERNAL "V8 static libraries")
 
+set(V8_D8_BIN "${V8_OUT_DIR}/d8" CACHE INTERNAL "V8 d8 shell")
+set(V8_BUILD_OUTPUTS ${V8_STATIC_LIB} ${V8_D8_BIN})
+
 set(V8_MISSING_LIBS "")
-foreach(lib IN LISTS V8_STATIC_LIB)
+foreach(lib IN LISTS V8_BUILD_OUTPUTS)
     if(NOT EXISTS "${lib}")
         list(APPEND V8_MISSING_LIBS "${lib}")
     endif()
@@ -94,14 +97,14 @@ endforeach()
 if(V8_MISSING_LIBS)
     message("Building V8 (missing: ${V8_MISSING_LIBS})")
     add_custom_command(
-            OUTPUT ${V8_STATIC_LIB}
+            OUTPUT ${V8_BUILD_OUTPUTS}
             COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} ninja -C ${V8_OUT_SUBDIR} ${V8_NINJA_TARGETS}
             WORKING_DIRECTORY ${V8_SRC_DIR}
-            COMMENT "Building V8 static libs: ${V8_NINJA_TARGETS}"
+            COMMENT "Building V8: ${V8_NINJA_TARGETS}"
             USES_TERMINAL
             VERBATIM)
 
-    add_custom_target(v8 DEPENDS ${V8_STATIC_LIB})
+    add_custom_target(v8 DEPENDS ${V8_BUILD_OUTPUTS})
 else()
     add_custom_target(v8)
 endif()
