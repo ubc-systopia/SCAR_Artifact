@@ -36,8 +36,6 @@ Set CPUs 0--15 to 2.4 GHz
 Disable ASLR by writing 0 to /proc/sys/kernel/randomize_va_space
 ```
 
-It is invoked automatically during CMake configuration and prompts for `sudo`.
-
 ## Build
 
 From the repository root:
