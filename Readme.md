@@ -62,10 +62,10 @@ result to expect. Everything else about the attacks is in the paper.
 
 | #  | case study                                                            | paper |
 |----|-----------------------------------------------------------------------|-------|
-| 1  | [QuickJS — OpenPGP.js](./experiments/quickjs_rsa/Readme.md)           | §4.2  |
-| 1a | [OpenPGP.js patch](./experiments/quickjs_rsa/openpgp_patch/Readme.md) | §4.2  |
-| 2  | [QuickJS — jpeg-js](./experiments/quickjs_jpeg/Readme.md)             | §4.3  |
-| 3  | [V8 — Elliptic](./experiments/v8_ecdh/Readme.md)                      | §4.4  |
-| 4  | [V8 — constant-time-js](./experiments/v8_constant_time_js/Readme.md)  | §4.5  |
-| 5  | [CPython — Dictionaries](./experiments/cpython_dictionary/Readme.md)  | §4.6  |
-| 6  | [CPython — `pow`](./experiments/cpython_pow/Readme.md)                | §4.7  |
+| 1  | [QuickJS — OpenPGP.js](./experiments/quickjs_rsa/Readme.md)           | §5.1   |
+| 1a | [OpenPGP.js patch](./experiments/quickjs_rsa/openpgp_patch/Readme.md) | §5.1.3 |
+| 2  | [QuickJS — jpeg-js](./experiments/quickjs_jpeg/Readme.md)             | §5.2   |
+| 3  | [V8 — Elliptic](./experiments/v8_ecdh/Readme.md)                      | §5.3   |
+| 4  | [V8 — constant-time-js](./experiments/v8_constant_time_js/Readme.md)  | §5.4   |
+| 5  | [CPython — Dictionaries](./experiments/cpython_dictionary/Readme.md)  | §5.5   |
+| 6  | [CPython — `pow`](./experiments/cpython_pow/Readme.md)                | §5.6   |

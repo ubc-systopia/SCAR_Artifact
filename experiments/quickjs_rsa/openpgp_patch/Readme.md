@@ -1,6 +1,6 @@
 # OpenPGP.js constant-time `modExp` patch
 
-Reproduces the disclosure and patch analysis in **paper §4.2**.
+Reproduces the disclosure and patch analysis in **paper §5.1.3**.
 
 QuickJS version: `3b45d15`
 

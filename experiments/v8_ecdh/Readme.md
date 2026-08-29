@@ -1,6 +1,6 @@
 # Case Study 5: V8 — Elliptic
 
-Reproduces the results in **paper §4.4** (V8 — Elliptic).
+Reproduces the results in **paper §5.3** (V8 — Elliptic).
 
 V8 version: `v13.9-lkgr`
 

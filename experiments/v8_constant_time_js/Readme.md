@@ -1,6 +1,6 @@
 # Case Study 6: V8 — constant-time-js
 
-Reproduces the results in **paper §4.5** (V8 — constant-time-js).
+Reproduces the results in **paper §5.4** (V8 — constant-time-js).
 
 V8 version: `v13.9-lkgr`
 

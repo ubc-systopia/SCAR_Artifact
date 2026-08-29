@@ -1,6 +1,6 @@
 # Case Study 3: CPython — Dictionary
 
-Reproduces the results in **paper §4.6** (CPython — Dictionaries).
+Reproduces the results in **paper §5.5** (CPython — Dictionaries).
 
 CPython version: `v3.13.1`
 

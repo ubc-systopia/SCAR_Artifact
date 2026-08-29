@@ -1,6 +1,6 @@
 # Case Study 1: QuickJS — OpenPGP.js
 
-Reproduces the results in **paper §4.2** (QuickJS — OpenPGP.js). The disclosure
+Reproduces the results in **paper §5.1** (QuickJS — OpenPGP.js). The disclosure
 and patch analysis in the same section lives in
 [`openpgp_patch/`](./openpgp_patch/Readme.md).
 

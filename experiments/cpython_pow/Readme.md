@@ -1,6 +1,6 @@
 # Case Study 4: CPython — `pow`
 
-Reproduces the results in **paper §4.7** (CPython — `pow`).
+Reproduces the results in **paper §5.6** (CPython — `pow`).
 
 CPython version: `v3.13.1`
 
