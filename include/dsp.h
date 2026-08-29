@@ -49,8 +49,6 @@ extern const uint32_t PS_fs; // cpu_freq / sample_interval
 
 #define BURST_GAP_HIST_BINS 8
 
-/* A compact description of a clustered timestamp stream. gap_hist[0..6]
- * count 1T..7T burst-center gaps and gap_hist[7] counts 8T or more. */
 typedef struct burst_pattern_stats {
 	uint64_t period;
 	uint64_t window_start;
@@ -67,19 +65,6 @@ typedef struct burst_pattern_stats {
 	double missing_rate;
 } burst_pattern_stats_t;
 
-/* Analyze an increasing event-timestamp stream without a reference clock.
- *
- * Events separated by at most gap_split cycles form one burst. If period_hint
- * is zero, the period is estimated from burst-start gaps. When
- * max_periods is nonzero, statistics are restricted to the densest
- * max_periods * period window, excluding setup and teardown activity. The
- * period count itself is inferred from burst-center gaps and checked only
- * against max_periods; it is not forced to one exact key size and there is no
- * assumed lower bound on a variable-length scalar.
- *
- * Returns 1 on success and 0 when there are too few events or no period can be
- * estimated. The operations used by the classifier are integer differences,
- * medians, threshold comparisons, and histogram increments. */
 int analyze_burst_pattern(const uint64_t *timestamps,
                           uint32_t count,
                           uint64_t gap_split,
