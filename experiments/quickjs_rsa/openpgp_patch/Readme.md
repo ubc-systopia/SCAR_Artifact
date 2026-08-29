@@ -56,7 +56,7 @@ between hits.
 
 
 ```bash
-cd SCAR_Artifact
+cd anonymous-sc-language-runtimes
 NUM_KEYS=100 VICTIM_RUNS=128 \
   experiments/quickjs_rsa/openpgp_patch/evaluation/run_bigint_select_rsa_pool.sh
 ```

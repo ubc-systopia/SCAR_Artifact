@@ -1,6 +1,4 @@
-# SCAR Artifact
-
-Artifact for "Cache Side-Channel Attacks on Language Runtimes"
+# Cache Side-Channel Attacks on Language Runtimes
 
 ## Hardware/Software Setup
 - CPU: Intel Xeon(R) Silver 4390Y SP
@@ -13,8 +11,9 @@ Artifact for "Cache Side-Channel Attacks on Language Runtimes"
 ## Getting the sources
 
 ```bash
-git clone --recurse-submodules <repository-url> SCAR_Artifact
-cd SCAR_Artifact
+git clone --recurse-submodules \
+    https://github.com/anonymous-sc-language-runtimes/anonymous-sc-language-runtimes
+cd anonymous-sc-language-runtimes
 ```
 
 ## Python environment

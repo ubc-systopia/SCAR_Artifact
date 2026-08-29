@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SCAR_Artifact C CXX)
+project(anonymous-sc-language-runtimes C CXX)
 
 set(CMAKE_C_STANDARD 11)
 

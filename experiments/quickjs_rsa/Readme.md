@@ -19,17 +19,17 @@ While OpenPGP.js's implementation of RSA encryption and decryption is timing-bal
 To run the evaluation execute the following command:
 
 ```bash
-cd SCAR_Artifact/build
+cd anonymous-sc-language-runtimes/build
 taskset -c 1,3,5,7,9,11,13,15 ././src/runtime/quickjs/quickjs_rt ../experiments/quickjs_rsa/js/openpgp_rsa.js
 ```
 
 ```bash
-cd SCAR_Artifact/build
+cd anonymous-sc-language-runtimes/build
 taskset -c 1,3,5,7,9,11,13,15 ./experiments/quickjs_rsa/quickjs_rsa_key_pool
 ```
 
 ```bash
-cd SCAR_Artifact
+cd anonymous-sc-language-runtimes
 python experiments/quickjs_rsa/evaluation/extract_openpgp_rsa.py -p build/output/quickjs_rsa_key_pool --at PS
 ```
 
