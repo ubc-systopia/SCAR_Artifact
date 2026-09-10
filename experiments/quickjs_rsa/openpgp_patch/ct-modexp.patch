@@ -1,0 +1,44 @@
+
+diff --git a/src/crypto/biginteger.ts b/src/crypto/biginteger.ts
+index 59227f31..626d8ac7 100644
+--- a/src/crypto/biginteger.ts
++++ b/src/crypto/biginteger.ts
+@@ -22,6 +22,20 @@ export function mod(a: bigint, m: bigint) {
+   return reduced < _0n ? reduced + m : reduced;
+ }
+
++/**
++ * Return either `a` or `b` based on `cond`, in algorithmic constant time.
++ * It requires passing a `bitLength` value large enough to represent `a` and `b`.
++ * @param {Boolean} cond
++ * @param {BigInt} a
++ * @param {BigInt} b
++ * @param {BigInt} maxBitLength
++ * @returns `a` if `cond` is true, `b` otherwise
++ */
++function selectBigInt(cond: bigint, a: bigint, b: bigint, maxBitLength: bigint) {
++  const mask = _1n << maxBitLength;
++  return (a & (mask - cond)) | (b & (mask - _1n + cond));
++}
++
+ /**
+  * Compute modular exponentiation using square and multiply
+  * @param {BigInt} a - Base
+@@ -34,6 +48,8 @@ export function modExp(b: bigint, e: bigint, n: bigint) {
+   if (n === _1n) return BigInt(0);
+   if (e < _0n) throw Error('Unsopported negative exponent');
+
++  const nBitLength = BigInt(bitLength(n));
++
+   let exp = e;
+   let x = b;
+
+@@ -45,7 +61,7 @@ export function modExp(b: bigint, e: bigint, n: bigint) {
+     // Always compute multiplication step, to reduce timing leakage
+     const rx = (r * x) % n;
+     // Update r only if lsb is 1 (odd exponent)
+-    r = lsb ? rx : r;
++    r = selectBigInt(lsb, rx, r, nBitLength);
+     x = (x * x) % n; // Square
+   }
+   return r;

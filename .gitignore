@@ -394,3 +394,11 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+
+### Project
+# Experiment outputs (tens of thousands of generated files)
+experiments/**/output/
+# Claude Code session state
+.claude/
+# macOS zip metadata
+__MACOSX/

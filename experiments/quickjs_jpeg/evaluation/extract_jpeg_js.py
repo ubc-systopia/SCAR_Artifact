@@ -172,7 +172,7 @@ def check_image_width(occ, dist, line_width):
 
 
 
-def extract_p_from_file(filepath, at="PP"):
+def extract_p_from_file(filepath, at="PP", image_path=None, scale=8):
     trace = load_trace(filepath)
 
     pos = trace[0].apply(lambda x: lat_to_hit(x[1], at))
@@ -363,11 +363,26 @@ def extract_p_from_file(filepath, at="PP"):
     # for r in image_pixel:
     #     print(r)
 
-    output_fp = Path(__file__).resolve().parent.parent / Path(
-        "output/jpeg-extraction.out"
-    )
+    output_dir = Path(__file__).resolve().parent.parent / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_fp = output_dir / "jpeg-extraction.out"
     with open(output_fp, "wb") as f:
         f.write(bytes(image_pixel))
+    print(f"block map ({width}x{height}) written to {output_fp}")
+
+    if image_path is None:
+        image_path = output_dir / "jpeg-extraction.jpg"
+    image_path = Path(image_path)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+
+    recovered = Image.fromarray(image_pixel, mode="L")
+    if scale != 1:
+        recovered = recovered.resize(
+            (width * scale, height * scale), Image.NEAREST
+        )
+    recovered.save(image_path)
+    print(f"recovered image ({recovered.width}x{recovered.height}) written to {image_path}")
 
     return (height, width, image_pixel)
 
@@ -391,12 +406,29 @@ if __name__ == "__main__":
         help="Output file",
     )
 
+    parser.add_argument(
+        "-o",
+        "--image",
+        type=str,
+        default=None,
+        help="Path of the recovered image (default: output/jpeg-extraction.jpg)",
+    )
+
+    parser.add_argument(
+        "--scale",
+        type=int,
+        default=8,
+        help="Upscaling factor of the recovered image, one value per 8x8 JPEG block (default: 8)",
+    )
+
     args = parser.parse_args()
 
     attack_type = args.att
 
     if args.file:
-        h, w, img_array = extract_p_from_file(args.file)
+        h, w, img_array = extract_p_from_file(
+            args.file, image_path=args.image, scale=args.scale
+        )
 
         scale = 8
         img_scaled = np.repeat(img_array, scale, axis=0)
