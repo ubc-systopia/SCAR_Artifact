@@ -10,17 +10,31 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 
+#include "config.h"
 #include "log.h"
 
 #define BARRIER_PROJ_ID (0)
 #define MUTEX_PROJ_ID (1)
 #define ACTION_PROJ_ID (2)
-#define DATA_PROJ_ID (2)
+#define DATA_PROJ_ID (3)
 
 const size_t sync_ctx_data_size = 1024;
 
+static const char *shm_key_path(void) {
+    return get_config()->project_root;
+}
+
+static void shm_key_fail(key_t key, int proj_id) {
+    log_error("shmget: %s (key 0x%x, proj_id %d, path %s)", strerror(errno),
+              key, proj_id, shm_key_path());
+    if (errno == EACCES) {
+        log_error("a segment with this key exists and is owned by another "
+                  "user; check `ipcs -m` and remove it with `ipcrm -m <shmid>`");
+    }
+}
+
 pthread_barrier_t *shm_create_barrier(int proj_id) {
-    key_t shmkey = ftok("/dev/null", proj_id + BARRIER_PROJ_ID);
+    key_t shmkey = ftok(shm_key_path(), proj_id);
     int shmid = shmget(shmkey, sizeof(pthread_barrier_t), 0644);
     log_info("shmkey for barrier = %d, shmid: %d", shmkey, shmid);
     pthread_barrier_t *barrier = NULL;
@@ -28,7 +42,7 @@ pthread_barrier_t *shm_create_barrier(int proj_id) {
         log_info("barrier created");
         shmid = shmget(shmkey, sizeof(pthread_barrier_t), 0644 | IPC_CREAT);
         if (shmid == -1) {
-            log_error("shmget: %s", strerror(errno));
+            shm_key_fail(shmkey, proj_id);
             exit(EXIT_FAILURE);
         }
         barrier = (pthread_barrier_t *) shmat(shmid, NULL, 0);
@@ -45,7 +59,7 @@ pthread_barrier_t *shm_create_barrier(int proj_id) {
 }
 
 void shm_release_barrier(int proj_id) {
-    key_t shmkey = ftok("/dev/null", proj_id + BARRIER_PROJ_ID);
+    key_t shmkey = ftok(shm_key_path(), proj_id);
     int shmid = shmget(shmkey, sizeof(pthread_barrier_t), 0644);
     if (shmid != -1) {
         if (shmctl(shmid, IPC_RMID, NULL) == -1) {
@@ -56,7 +70,7 @@ void shm_release_barrier(int proj_id) {
 }
 
 pthread_mutex_t* shm_create_mutex(int proj_id) {
-    key_t shmkey = ftok("/dev/null", proj_id + MUTEX_PROJ_ID);
+    key_t shmkey = ftok(shm_key_path(), proj_id);
     int shmid = shmget(shmkey, sizeof(pthread_mutex_t), 0644);
     pthread_mutex_t* mutex = NULL;
     if (shmid == -1) {
@@ -78,7 +92,7 @@ pthread_mutex_t* shm_create_mutex(int proj_id) {
 }
 
 void shm_release_mutex(int proj_id) {
-    key_t shmkey = ftok("/dev/null", proj_id + MUTEX_PROJ_ID);
+    key_t shmkey = ftok(shm_key_path(), proj_id);
     int shmid = shmget(shmkey, sizeof(pthread_mutex_t), 0644);
     if (shmid > 0) {
         if (shmctl(shmid, IPC_RMID, NULL) == -1) {
@@ -90,44 +104,31 @@ void shm_release_mutex(int proj_id) {
 
 
 void* shm_alloc(const char* name, int proj_id, size_t size) {
-    char filename[256];
-    sprintf(filename, "/tmp/%s", name);
-
-    struct stat buffer;
-    if (stat(filename, &buffer) != 0) {
-        FILE* file = fopen(filename, "w");
-        fclose(file);
-    }
-
-    key_t key = ftok(filename, proj_id + DATA_PROJ_ID);  // Generate the same unique key
-    int shmid = shmget(key, size, 0644);  // Get shared memory
+    (void) name;
+    key_t key = ftok(shm_key_path(), proj_id);
+    int shmid = shmget(key, size, 0644);
 
     if (shmid == -1) {
         shmid = shmget(key, size, 0644 | IPC_CREAT);
         if (shmid == -1) {
-            log_error("shmget: %s", strerror(errno));
+            shm_key_fail(key, proj_id);
             exit(EXIT_FAILURE);
         }
     }
 
-    void* sm = shmat(shmid, NULL, 0);  // Attach to shared memory
+    void* sm = shmat(shmid, NULL, 0);
     return sm;
 }
 
 void shm_release(const char* name, int proj_id, size_t size) {
-    char filename[256];
-    sprintf(filename, "/tmp/%s", name);
+    (void) name;
+    key_t key = ftok(shm_key_path(), proj_id);
+    int shmid = shmget(key, size, 0644);
 
-    struct stat buffer;
-    if (stat(filename, &buffer) == 0) {
-        key_t key = ftok(filename, proj_id + DATA_PROJ_ID);  // Generate the same unique key
-        int shmid = shmget(key, size, 0644);  // Get shared memory
-
-        if (shmid > 0) {
-            if (shmctl(shmid, IPC_RMID, NULL) == -1) {
-                log_error("shmctl failed: %s", strerror(errno));
-                exit(1);
-            }
+    if (shmid > 0) {
+        if (shmctl(shmid, IPC_RMID, NULL) == -1) {
+            log_error("shmctl failed: %s", strerror(errno));
+            exit(1);
         }
     }
 }
