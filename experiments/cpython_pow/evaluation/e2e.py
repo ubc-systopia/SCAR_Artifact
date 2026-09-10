@@ -108,21 +108,44 @@ def main():
         print(f"[run] runtime: {runtime} {victim} 1")
         print(f"[run] attacker: {' '.join(at_cmd)}")
 
-        with open(os.path.join(out_dir, "runtime.log"), "w") as rt_log:
-            rt = subprocess.Popen(
-                [runtime, victim, "1"], cwd=build_dir, stdout=rt_log, stderr=rt_log
-            )
-            time.sleep(0.3)
-            with open(os.path.join(out_dir, "attacker.log"), "w") as at_log:
-                at = subprocess.Popen(
-                    at_cmd, cwd=build_dir, stdout=at_log, stderr=at_log
+        attempts = int(os.environ.get("CPOW_ATTEMPTS", "8"))
+        cpus = os.environ.get("CPOW_CPUS", "1,3,5,7,9,11,13,15")
+        pin = ["taskset", "-c", cpus]
+        at_rc = 1
+        for attempt in range(1, attempts + 1):
+            print(f"[run] attempt {attempt}/{attempts}")
+            with open(os.path.join(out_dir, "runtime.log"), "w") as rt_log:
+                rt = subprocess.Popen(
+                    pin + [runtime, victim, "1"], cwd=build_dir, stdout=rt_log, stderr=rt_log
                 )
-                at_rc = at.wait()
-            rt.wait()
-        print(f"[run] attacker rc={at_rc}")
-        if at_rc != 0:
-            print(f"[run] attacker failed; see {out_dir}/attacker.log")
-            return at_rc
+                time.sleep(0.3)
+                with open(os.path.join(out_dir, "attacker.log"), "w") as at_log:
+                    at = subprocess.Popen(
+                        pin + at_cmd, cwd=build_dir, stdout=at_log, stderr=at_log
+                    )
+                    at_rc = at.wait()
+                if at_rc == 0:
+                    try:
+                        rt.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        rt.terminate()
+                        try:
+                            rt.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            rt.kill()
+                else:
+                    rt.terminate()
+                    try:
+                        rt.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        rt.kill()
+            print(f"[run] attempt {attempt}: attacker rc={at_rc}")
+            if at_rc == 0:
+                break
+            print("[run] eviction-set/capture failed, retrying")
+        else:
+            print(f"[run] failed after {attempts} attempts; see {out_dir}/attacker.log")
+            return at_rc or 1
 
     folders = sorted(
         (

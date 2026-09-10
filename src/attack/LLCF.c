@@ -123,6 +123,9 @@ EVSet *prepare_evset(u8 *target, helper_thread_ctrl *hctrl) {
 
 	EVSet *sf_evset = build_skx_sf_EVSet(target, &sf_config, NULL);
 
+	log_info("SF evset built for %p: size=%d (need SF_ASSOC=%d)",
+	         (void *)target, sf_evset ? (int)sf_evset->size : -1, SF_ASSOC);
+
 	if (!check_and_set_sf_evset(target, sf_evset)) {
 		log_error("Failed to build the main SF evset\n");
 		return NULL;
