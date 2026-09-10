@@ -1,3 +1,14 @@
+foreach(submodule quickjs cpython LLCFeasible depot_tools)
+    file(GLOB submodule_files "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/*")
+    if(NOT submodule_files)
+        message(FATAL_ERROR
+                "third_party/${submodule} is empty, so the submodules have not "
+                "been checked out. Run\n"
+                "    git submodule update --init --recursive\n"
+                "from the repository root and configure again.")
+    endif()
+endforeach()
+
 # QuickJS
 set(QUICKJS_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/quickjs" CACHE FILEPATH "QuickJS source directory")
 set(QUICKJS_INSTALL_DIR "${CMAKE_BINARY_DIR}/quickjs" CACHE FILEPATH "QuickJS installation directory")
@@ -45,18 +56,34 @@ set(V8_OUT_DIR "${V8_SRC_DIR}/${V8_OUT_SUBDIR}" CACHE INTERNAL "V8 build directo
 set(V8_NINJA_TARGETS v8_monolith v8_libbase v8_libplatform d8)
 
 if(NOT EXISTS "${V8_SRC_DIR}")
+    if(NOT EXISTS "${V8_DEPOT_TOOLS_DIR}/fetch")
+        message(FATAL_ERROR
+                "depot_tools is empty (${V8_DEPOT_TOOLS_DIR}). The submodules "
+                "have not been checked out; run\n"
+                "    git submodule update --init --recursive\n"
+                "from the repository root and configure again.")
+    endif()
+
     message("Fetching V8...")
     execute_process(
             COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} fetch v8
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMAND_ERROR_IS_FATAL ANY)
     message("Checking out target commit...")
     execute_process(
             COMMAND git checkout ${V8_GIT_REF}
-            WORKING_DIRECTORY ${V8_SRC_DIR})
+            WORKING_DIRECTORY ${V8_SRC_DIR}
+            COMMAND_ERROR_IS_FATAL ANY)
     message("Syncing V8...")
     execute_process(
             COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} gclient sync -D
-            WORKING_DIRECTORY ${V8_SRC_DIR})
+            WORKING_DIRECTORY ${V8_SRC_DIR}
+            COMMAND_ERROR_IS_FATAL ANY)
+endif()
+
+if(NOT EXISTS "${V8_SRC_DIR}")
+    message(FATAL_ERROR
+            "V8 source directory is still missing after the fetch: ${V8_SRC_DIR}")
 endif()
 
 if(NOT EXISTS "${V8_OUT_DIR}/build.ninja")
@@ -75,7 +102,8 @@ if(NOT EXISTS "${V8_OUT_DIR}/build.ninja")
     string(REPLACE "\n" " " GN_ARGS "${GN_ARGS}")
     execute_process(
             COMMAND ${CMAKE_COMMAND} -E env PATH=${V8_DEPOT_TOOLS_DIR}:$ENV{PATH} gn gen ${V8_OUT_SUBDIR} --args=${GN_ARGS}
-            WORKING_DIRECTORY ${V8_SRC_DIR})
+            WORKING_DIRECTORY ${V8_SRC_DIR}
+            COMMAND_ERROR_IS_FATAL ANY)
 endif()
 
 set(V8_STATIC_LIB
