@@ -2,7 +2,9 @@
 
 #include <stdint.h>
 
-void cpython_eval_loop(char* file, uint32_t iterations);
+#define CPYTHON_EXTRA_WAITING_TIME (40000)
+
+void cpython_eval_loop(char *file, uint32_t iterations);
 
 void cpython_init(char *file);
 

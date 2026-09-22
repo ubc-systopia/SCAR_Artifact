@@ -93,7 +93,7 @@ void cpython_save_gt(const char *filename) {
 }
 
 void cpython_eval_loop(char *file, uint32_t iterations) {
-	uint32_t extra_waiting_time = 40000;
+	uint32_t extra_waiting_time = CPYTHON_EXTRA_WAITING_TIME;
 
 	log_info("Start cpython eval loop");
 
@@ -154,7 +154,9 @@ void cpython_eval_loop(char *file, uint32_t iterations) {
 			}
 		} else if (action == SYNC_CTX_PROBE) {
 			assert(probe != NULL);
-			PyObject *arg = PyLong_FromUnsignedLong(*sync_ctx.data);
+			uint64_t probe_index = *(const uint64_t *)sync_ctx.data;
+			PyObject *arg = PyLong_FromUnsignedLong(probe_index);
+			log_trace("Probe index %lu", probe_index);
 			for (int i = 0; i < iterations; i++) {
 				tsc = rdtscp();
 				PyObject *ret = PyObject_CallOneArg(probe, arg);
@@ -186,9 +188,11 @@ void cpython_eval_loop(char *file, uint32_t iterations) {
 		pthread_barrier_wait(sync_ctx.barrier);
 		log_info("Runtime end done %lu", rdtscp());
 
-		char filename[256];
-		snprintf(filename, 256, "output/cpython_gt/gt_%d.out", iteration++);
-		cpython_save_gt(filename);
+		if (action != SYNC_CTX_PROBE) {
+			char filename[256];
+			snprintf(filename, 256, "output/cpython_gt/gt_%d.out", iteration++);
+			cpython_save_gt(filename);
+		}
 
 	} while (1);
 

