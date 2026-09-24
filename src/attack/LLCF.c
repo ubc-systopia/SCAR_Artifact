@@ -32,13 +32,16 @@ EVSet *get_sf_kth_evset(int k) {
 	          page_slot,
 	          l2_uc_slot,
 	          l3_uc_slot);
-	if (sfevset_complex[page_slot][l2_uc_slot][l3_uc_slot] == NULL) {
+	if (sfevset_complex[page_slot] == NULL ||
+	    sfevset_complex[page_slot][l2_uc_slot] == NULL ||
+	    sfevset_complex[page_slot][l2_uc_slot][l3_uc_slot] == NULL) {
 		log_warn(
 		    "Cannot find evset for [pageoff:%d][l2_uc_off:%d][l3_uc_off:%d]\n",
 		    k,
 		    page_slot,
 		    l2_uc_slot,
 		    l3_uc_slot);
+		return NULL;
 	}
 	return sfevset_complex[page_slot][l2_uc_slot][l3_uc_slot];
 }

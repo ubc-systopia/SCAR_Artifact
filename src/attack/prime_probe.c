@@ -13,8 +13,17 @@ uint32_t PS_profile_once(EVSet *evset,
                          uint64_t **sample_tsc,
                          uint64_t **probe_time) {
 	uint64_t tsc0, tsc1;
+	if (evset == NULL || evset->size == 0 || evset->addrs == NULL ||
+	    evset->addrs[0] == NULL) {
+		return 0;
+	}
+	if (evset->size < SF_ASSOC) {
+		log_warn("PS_profile_once: undersized evset->size=%u < SF_ASSOC=%d",
+		         evset->size,
+		         SF_ASSOC);
+	}
 	uint8_t *scope = evset->addrs[0];
-	evchain *sf_chain = evchain_build(evset->addrs, SF_ASSOC);
+	evchain *sf_chain = evchain_build(evset->addrs, evset->size);
 
 	u64 scope_lat, end;
 	u32 aux, last_aux, index = 0;
