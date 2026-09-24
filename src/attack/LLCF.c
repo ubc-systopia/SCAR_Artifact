@@ -141,15 +141,59 @@ EVSet *prepare_evset(u8 *target, helper_thread_ctrl *hctrl) {
 	return sf_evset;
 }
 
+static bool evset_thres_clean(u8 *target, EVSet *evset, int thresh,
+                              helper_thread_ctrl *hctrl) {
+	enum { n_repeat = 1000 };
+	i64 no_acc[n_repeat], acc[n_repeat];
+	flush_evset(evset);
+	_lfence();
+	u64 end_tsc;
+	for (u64 r = 0; r < (u64)n_repeat * 2;) {
+		u32 aux_before, aux_after;
+		_rdtscp_aux(&aux_before);
+		_lfence();
+		prime_skx_sf_evset_para(evset, array_repeat, l2_repeat);
+		_lfence();
+		if (r % 2) {
+			helper_thread_read_single(target, hctrl);
+		}
+		_lfence();
+		i64 lat = probe_skx_sf_evset_para(evset, &end_tsc, &aux_after);
+		if (aux_before == aux_after &&
+		    lat < detected_cache_lats.interrupt_thresh) {
+			if (r % 2) {
+				acc[r / 2] = lat;
+			} else {
+				no_acc[r / 2] = lat;
+			}
+			r += 1;
+		}
+		_lfence();
+	}
+	u32 otc = 0, utc = 0;
+	for (u32 i = 0; i < n_repeat; i++) {
+		otc += no_acc[i] > thresh;
+		utc += acc[i] < thresh;
+	}
+	u64 bad = (u64)(n_repeat * bad_threshold_ratio);
+	if (otc > bad || utc > bad) {
+		log_warn("Reject evset for %p: fp=%u fn=%u (max %lu)",
+		         (void *)target, otc, utc, bad);
+		return false;
+	}
+	return true;
+}
+
 void prepare_evset_thres(uintptr_t target, EVSet **evset, int *threshold) {
 	helper_thread_ctrl hctrl;
 	if (start_helper_thread(&hctrl)) {
 		_error("Failed to start helper!\n");
 		return;
 	}
-	int retry = 4;
+	int retry = 30;
 	for (int i = 0; i < retry; ++i) {
 		*evset = prepare_evset((uint8_t *)target, &hctrl);
+		*threshold = 0;
 		if (*evset != NULL) {
 			*threshold = calibrate_para_probe_lat((uint8_t *)target,
 			                                      *evset,
@@ -157,12 +201,13 @@ void prepare_evset_thres(uintptr_t target, EVSet **evset, int *threshold) {
 			                                      l2_repeat,
 			                                      bad_threshold_ratio);
 		}
-		if (*evset != NULL && *threshold != 0) {
+		if (*evset != NULL && *threshold != 0 &&
+		    evset_thres_clean((uint8_t *)target, *evset, *threshold, &hctrl)) {
 			log_info("Find threshold: %d", *threshold);
 			break;
 		}
 		if (i == retry - 1) {
-			log_error("Cannot calibrate probe latency");
+			log_error("Cannot build a clean evset for %p", (void *)target);
 			exit(1);
 		}
 	}
